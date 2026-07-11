@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DMRC Operations Control | Application Portal</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+
+    <link rel="stylesheet" href="styles.css">
+
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="app.js"></script>
+</head>
+<body x-data="wizardEngine">
+
+    <header class="py-3 bg-white border-bottom shadow-sm">
+        <div class="container-xl d-flex align-items-center justify-content-between">
+            <div class="d-flex align-items-center gap-2">
+                <img src="dmrc-logo.png" alt="DMRC logo" class="brand-logo" style="flex-shrink: 0;">
+                <span class="fs-5 fw-bold text-primary" style="color: var(--dmrc-blue) !important; font-family: var(--font-display);">DMRC</span>
+                <div style="width: 1px; height: 20px; background-color: var(--border-light);"></div>
+                <span class="text-muted small fw-medium">Intern Referral Portal</span>
+            </div>
+            <div class="d-flex align-items-center gap-2 bg-light px-3 py-1 rounded border">
+                <i class="bi bi-person-badge text-secondary"></i>
+                <div class="text-end" style="line-height: 1.2;">
+                    <div class="fw-bold small" x-text="sessionEmployee.name"></div>
+                    <div class="text-muted" style="font-size: 0.7rem;" x-text="sessionEmployee.department + ' · ' + sessionEmployee.empId"></div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <template x-if="portalState === 'cycle_select'">
+        <div class="container-xl py-5 my-5" x-transition>
+            <div class="text-center mb-5">
+                <h1 class="h3 fw-bold mb-2" style="font-family: var(--font-display);">Select Internship Term</h1>
+                <p class="text-muted mx-auto" style="max-width: 500px;">Please choose an active cycle below to start the referral application process.</p>
+            </div>
+
+            <div class="row g-4 justify-content-center mx-auto" style="max-width: 750px;">
+                <div class="col-md-6">
+                    <div class="card p-4 rounded-4 text-center option-selection-card"
+                         :class="placement.cycle_id === 1 ? 'selected-active' : ''"
+                         @click="confirmCycleSelection('Summer', 1)">
+                        <div class="fs-1 text-warning mb-2"><i class="bi bi-sun-fill"></i></div>
+                        <h2 class="h5 fw-bold mb-1">Summer 2026</h2>
+                        <span class="badge bg-light text-muted border px-3 py-2 mt-2 rounded-pill fw-semibold tracking-badge">Timeline: May - July</span>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <div class="card p-4 rounded-4 text-center option-selection-card"
+                         :class="placement.cycle_id === 2 ? 'selected-active' : ''"
+                         @click="confirmCycleSelection('Winter', 2)">
+                        <div class="fs-1 text-primary mb-2 color-icon"><i class="bi bi-snow2"></i></div>
+                        <h2 class="h5 fw-bold mb-1">Winter 2026</h2>
+                        <span class="badge bg-light text-muted border px-3 py-2 mt-2 rounded-pill fw-semibold tracking-badge">Timeline: December - January</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-center mt-5">
+                <button type="button" class="btn btn-dmrc-primary btn-lg px-5 py-3 rounded-pill shadow fw-bold text-center"
+                        :disabled="!placement.cycle_id"
+                        @click="initializeWizard()">
+                    Begin Application <i class="bi bi-arrow-right ms-2"></i>
+                </button>
+            </div>
+        </div>
+    </template>
+
+    <template x-if="portalState === 'form_wizard'">
+        <div>
+            <div x-show="showValidationWarning" 
+                 class="position-fixed top-0 start-0 w-100 h-100" 
+                 style="z-index: 1050; display: none;" 
+                 x-transition.opacity>
+                <div class="w-100 h-100 bg-dark bg-opacity-50 d-flex align-items-center justify-content-center">
+                    <div class="card border-0 shadow-lg rounded-4 p-4 mx-3" style="max-width: 400px; width: 100%;" @click.outside="showValidationWarning = false">
+                        <div class="text-center mb-3">
+                            <div class="bg-warning bg-opacity-10 text-warning rounded-circle d-inline-flex align-items-center justify-content-center mb-3" style="width: 60px; height: 60px;">
+                                <i class="bi bi-exclamation-triangle-fill fs-2"></i>
+                            </div>
+                            <h3 class="h5 fw-bold mb-2">Incomplete Fields Detected</h3>
+                            <p class="text-muted small mb-0">You have left some mandatory fields blank. You can skip them for now, but you will need to complete them before final submission.</p>
+                        </div>
+                        <div class="d-flex gap-2 w-100 mt-4">
+                            <button type="button" class="btn btn-outline-secondary w-50 fw-bold" @click="showValidationWarning = false">Stay & Fill</button>
+                            <button type="button" class="btn btn-warning w-50 fw-bold text-dark" @click="proceedToNextStep()">Skip & Next</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div x-show="showSubmitConfirm"
+                 class="position-fixed top-0 start-0 w-100 h-100"
+                 style="z-index: 1060; display: none;"
+                 x-transition.opacity>
+                <div class="w-100 h-100 bg-dark bg-opacity-50 d-flex align-items-center justify-content-center">
+                    <div class="card border-0 shadow-lg rounded-4 p-4 mx-3" style="max-width: 420px; width: 100%;" @click.outside="showSubmitConfirm = false">
+                        <div class="text-center mb-3">
+                            <div class="rounded-circle d-inline-flex align-items-center justify-content-center mb-3" style="width: 60px; height: 60px; background-color: var(--dmrc-blue-soft); color: var(--dmrc-blue);">
+                                <i class="bi bi-lock-fill fs-2"></i>
+                            </div>
+                            <h3 class="h5 fw-bold mb-2">Confirm Final Submission</h3>
+                            <p class="text-muted small mb-0">This will permanently lock the application record for HR verification. No further edits will be possible after submission.</p>
+                        </div>
+                        <div class="d-flex gap-2 w-100 mt-4">
+                            <button type="button" class="btn btn-outline-secondary w-50 fw-bold" @click="showSubmitConfirm = false">Go Back</button>
+                            <button type="button" class="btn btn-dmrc-primary w-50 fw-bold" @click="submitApplication()">Confirm &amp; Submit</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <nav class="bg-white border-bottom py-2 shadow-sm mb-4" x-transition>
+                <div class="container-xl">
+                    <div class="d-flex justify-content-between align-items-center overflow-x-auto flex-nowrap" style="gap: 1rem;">
+                        <template x-for="i in totalSteps">
+                            <button type="button" class="btn border-0 d-flex align-items-center gap-2 p-2 flex-shrink-0"
+                                    @click="goToStep(i)"
+                                    :disabled="i > highestStepReached"
+                                    style="cursor: pointer; text-align: left; white-space: nowrap;">
+                                
+                                <span class="step-circle d-flex align-items-center justify-content-center fw-bold flex-shrink-0"
+                                      :class="currentStep === i ? 'is-active' : (currentStep > i ? 'is-complete' : 'is-pending')">
+                                    <span x-show="currentStep <= i" x-text="i"></span>
+                                    <i x-show="currentStep > i" class="bi bi-check2"></i>
+                                </span>
+                                
+                                <div class="d-none d-sm-block" style="line-height: 1.1;">
+                                    <span class="d-block fw-bold small text-capitalize" :class="currentStep === i ? 'step-label-active' : 'text-dark'" x-text="i === 1 ? 'Details' : (i === 2 ? 'Academic' : (i === 3 ? 'Documents' : (i === 4 ? 'Internship Details' : 'Review')))"></span>
+                                    <span class="text-muted" style="font-size: 0.65rem;" x-text="i === 1 ? 'Bio Records' : (i === 2 ? 'Transcript' : (i === 3 ? 'Vault' : (i === 4 ? 'Parameters' : 'Submission')))"></span>
+                                </div>
+                            </button>
+                        </template>
+                    </div>
+                </div>
+            </nav>
+
+            <main class="container-xl pb-5">
+                <div class="row g-4">
+                    <div class="col-lg-8">
+                        <div class="card border-0 shadow-sm p-4 rounded-4 bg-white">
+                            
+                            <div x-show="currentStep === 1" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Student Details</h2>
+                                    <p class="text-muted small">Enter the candidate's primary biographical parameters mapping strictly to your core database shape.</p>
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-6"><label class="form-label">Full Name<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="student.fullName" placeholder="As written on College ID card"></div>
+                                    <div class="col-md-6"><label class="form-label">Father's Name<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="student.fathersName" placeholder="Father's complete name"></div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Gender<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="student.gender"><option value="">Select</option><option value="Male">Male</option><option value="Female">Female</option><option value="Other">Other</option></select>
+                                    </div>
+                                    <div class="col-md-4"><label class="form-label">Date of Birth<span class="text-danger">*</span></label><input type="text" class="form-control bg-white" x-model="student.dateOfBirth" readonly x-init="flatpickr($el, { dateFormat: 'Y-m-d', altInput: true, altFormat: 'd-m-Y' })" placeholder="DD-MM-YYYY" style="cursor: pointer;"></div>
+                                    <div class="col-md-4"><label class="form-label">Mobile Number<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="student.mobile_number" @input="restrictMobileInput('mobile_number', 'f_email')" :class="isMobileInvalid('mobile_number') ? 'is-invalid' : ''" placeholder="10-digit mobile number"></div>
+                                    <div class="col-md-12"><label class="form-label">Email ID<span class="text-danger">*</span></label><input type="email" class="form-control" id="f_email" x-model="student.personal_email" placeholder="candidate@institution.edu"></div>
+                                    <div class="col-md-12"><label class="form-label">Permanent Address<span class="text-danger">*</span></label><textarea class="form-control" rows="2" x-model="student.permanent_address" placeholder="Complete resident layout space"></textarea></div>
+                                    <div class="divider-line"></div>
+                                    <h3 class="h6 fw-bold text-secondary mb-1">Emergency Contact Parameters</h3>
+                                    <div class="col-md-6"><label class="form-label">Emergency Contact Name<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="student.emergency_contact_name" placeholder="Contact person's full name"></div>
+                                    <div class="col-md-6"><label class="form-label">Emergency Contact Mobile<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="student.emergency_contact_mobile" @input="restrictMobileInput('emergency_contact_mobile', null)" :class="isMobileInvalid('emergency_contact_mobile') ? 'is-invalid' : ''" placeholder="10-digit mobile matrix"></div>
+                                </div>
+                            </div>
+
+                            <div x-show="currentStep === 2" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Academic &amp; Transcript Matrix</h2>
+                                    <p class="text-muted small">Input educational history matching child table specifications.</p>
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-12"><label class="form-label">University Name<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="academic.university_name" placeholder="Name of the governing University"></div>
+                                    <div class="col-md-12"><label class="form-label">College / Institute Name<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="academic.college_name" placeholder="Name of the specific college or campus"></div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Course (Degree)<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="academic.course"><option value="">Select Degree</option><template x-for="course in courseOptions"><option :value="course" x-text="course"></option></template><option value="Other">Other (Please Specify)</option></select>
+                                    </div>
+                                    <div class="col-md-6" x-show="academic.course === 'Other'" x-transition><label class="form-label">Specify Custom Degree<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="academic.course_other" placeholder="Enter degree name"></div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Branch / Specialization<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="academic.branch"><option value="">Select Branch</option><template x-for="branch in branchOptions"><option :value="branch" x-text="branch"></option></template><option value="Other">Other (Please Specify)</option></select>
+                                    </div>
+                                    <div class="col-md-6" x-show="academic.branch === 'Other'" x-transition><label class="form-label">Specify Custom Branch<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="academic.branch_other" placeholder="Enter specialization name"></div>
+                                    <div class="divider-line"></div>
+                                    <h3 class="h6 fw-bold text-secondary mb-1">Current Academic Standing</h3>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Current Semester<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="academic.current_semester"><option value="">Select</option><template x-for="sem in 10"><option :value="sem" x-text="'Semester ' + sem"></option></template><option value="Graduated">Graduated / Alumni</option></select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label d-block">Grading System<span class="text-danger">*</span></label>
+                                        <div class="btn-group w-100" role="group">
+                                            <input type="radio" class="btn-check" name="btnradio" id="grade1" autocomplete="off" value="CGPA" x-model="academic.grading_system" @change="academic.current_score = ''">
+                                            <label class="btn btn-outline-primary" style="font-size: 0.85rem;" for="grade1">CGPA (10)</label>
+                                            <input type="radio" class="btn-check" name="btnradio" id="grade2" autocomplete="off" value="Percentage" x-model="academic.grading_system" @change="academic.current_score = ''">
+                                            <label class="btn btn-outline-primary" style="font-size: 0.85rem;" for="grade2">%</label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4"><label class="form-label">Current Score<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="academic.current_score" @input="restrictScoreInput()" :placeholder="academic.grading_system === 'CGPA' ? 'Max 10.00' : 'Max 100.00'"></div>
+                                </div>
+                            </div>
+
+                            <div x-show="currentStep === 3" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Asset Management Vault</h2>
+                                    <p class="text-muted small">Upload mandatory compliance documents. Max 5MB per file. You may upload these later before final submission.</p>
+                                </div>
+                                <div class="row g-4">
+                                    <div class="col-md-6">
+                                        <label class="form-label">AADHAR<span class="text-danger">*</span></label>
+                                        <div class="d-flex gap-2">
+                                            <input type="file" class="form-control" accept=".jpg,.jpeg,.png,.pdf" @change="handleFileUpload($event, 'aadhar')">
+                                            <button type="button" class="btn btn-outline-primary px-3 flex-shrink-0" x-show="documents.aadhar" @click="previewDocument('aadhar')" title="Preview Document"><i class="bi bi-eye-fill"></i></button>
+                                        </div>
+                                        <div class="form-text mt-1" style="font-size: 0.72rem;">Max 5MB • Allowed: PDF, JPG, PNG</div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">College ID<span class="text-danger">*</span></label>
+                                        <div class="d-flex gap-2">
+                                            <input type="file" class="form-control" accept=".jpg,.jpeg,.png,.pdf" @change="handleFileUpload($event, 'college_id')">
+                                            <button type="button" class="btn btn-outline-primary px-3 flex-shrink-0" x-show="documents.college_id" @click="previewDocument('college_id')" title="Preview Document"><i class="bi bi-eye-fill"></i></button>
+                                        </div>
+                                        <div class="form-text mt-1" style="font-size: 0.72rem;">Max 5MB • Allowed: PDF, JPG, PNG</div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Letter of Recommendation<span class="text-danger">*</span></label>
+                                        <div class="d-flex gap-2">
+                                            <input type="file" class="form-control" accept=".jpg,.jpeg,.png,.pdf" @change="handleFileUpload($event, 'lor')">
+                                            <button type="button" class="btn btn-outline-primary px-3 flex-shrink-0" x-show="documents.lor" @click="previewDocument('lor')" title="Preview Document"><i class="bi bi-eye-fill"></i></button>
+                                        </div>
+                                        <div class="form-text mt-1" style="font-size: 0.72rem;">Max 5MB • Allowed: PDF, JPG, PNG</div>
+                                    </div>
+                                    <div class="divider-line my-3"></div>
+                                    <h3 class="h6 fw-bold text-secondary mb-2 mt-0">Visual Identification</h3>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Passport Size Photograph<span class="text-danger">*</span></label>
+                                        <div class="d-flex gap-2">
+                                            <input type="file" class="form-control" accept=".jpg,.jpeg,.png" @change="handleFileUpload($event, 'photograph')">
+                                            <button type="button" class="btn btn-outline-primary px-3 flex-shrink-0" x-show="documents.photograph" @click="previewDocument('photograph')" title="Preview Image"><i class="bi bi-eye-fill"></i></button>
+                                        </div>
+                                        <div class="form-text mt-1" style="font-size: 0.72rem;">Max 5MB • <strong class="text-dark">Allowed: JPG, PNG ONLY</strong></div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Signature<span class="text-danger">*</span></label>
+                                        <div class="d-flex gap-2">
+                                            <input type="file" class="form-control" accept=".jpg,.jpeg,.png" @change="handleFileUpload($event, 'signature')">
+                                            <button type="button" class="btn btn-outline-primary px-3 flex-shrink-0" x-show="documents.signature" @click="previewDocument('signature')" title="Preview Image"><i class="bi bi-eye-fill"></i></button>
+                                        </div>
+                                        <div class="form-text mt-1" style="font-size: 0.72rem;">Max 5MB • <strong class="text-dark">Allowed: JPG, PNG ONLY</strong></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div x-show="currentStep === 4" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Internship Details</h2>
+                                    <p class="text-muted small">Define placement parameters mapping to operational capacities.</p>
+                                </div>
+
+                                <div class="row g-4 mb-4">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Target Department<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="placement.department_id">
+                                            <option value="">Select Department</option>
+                                            <template x-for="dept in dmrcDepartments">
+                                                <option :value="dept" x-text="dept"></option>
+                                            </template>
+                                        </select>
+                                        
+                                        <div x-show="isWaitlisted" x-transition.opacity style="display: none;">
+                                            <div class="alert alert-warning mt-2 d-flex align-items-center gap-2 py-2 shadow-sm rounded-3" style="font-size: 0.75rem; border-color: #FDE047; background-color: #FEF9C3; color: #854D0E;">
+                                                <i class="bi bi-exclamation-triangle-fill fs-6"></i>
+                                                <div style="line-height: 1.2;"><strong>High Demand:</strong> This department is currently at capacity. Proceeding will place this application on the official Waitlist.</div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="col-md-4">
+                                        <label class="form-label">Internship Duration<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="placement.duration_weeks">
+                                            <option value="">Select Duration</option>
+                                            <option value="4">4 Weeks (1 Month)</option>
+                                            <option value="6">6 Weeks (1.5 Months)</option>
+                                            <option value="8">8 Weeks (2 Months)</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="col-md-4">
+                                        <label class="form-label">Preferred Date of Joining<span class="text-danger">*</span></label>
+                                        <input type="text" class="form-control bg-white" 
+                                               x-model="placement.requested_doj" 
+                                               readonly 
+                                               x-init="initDOJCalendar($el)" 
+                                               placeholder="Select allowed date" 
+                                               style="cursor: pointer;">
+                                    </div>
+                                </div>
+
+                                <div class="card bg-light border-0 rounded-4 overflow-hidden mt-2">
+                                    <div class="p-3 bg-secondary bg-opacity-10 border-bottom border-secondary border-opacity-10 d-flex align-items-center gap-2">
+                                        <i class="bi bi-shield-lock-fill text-secondary"></i>
+                                        <span class="fw-bold text-dark" style="font-size: 0.85rem;">Internal Referrer Authorization</span>
+                                    </div>
+                                    <div class="p-4">
+                                        <div class="row g-3">
+                                            <div class="col-md-3">
+                                                <label class="form-label text-muted">Employee ID</label>
+                                                <input type="text" class="form-control bg-white text-muted fw-medium" :value="sessionEmployee.empId" disabled readonly>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label text-muted">Referrer Name</label>
+                                                <input type="text" class="form-control bg-white text-muted fw-medium" :value="sessionEmployee.name" disabled readonly>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label text-muted">Designation</label>
+                                                <input type="text" class="form-control bg-white text-muted fw-medium" :value="sessionEmployee.designation" disabled readonly>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label text-muted">Department</label>
+                                                <input type="text" class="form-control bg-white text-muted fw-medium" :value="sessionEmployee.department" disabled readonly>
+                                            </div>
+                                            
+                                            <div class="col-12 mt-4">
+                                                <div class="form-check p-3 rounded-3 border bg-white d-flex align-items-center gap-2" :class="placement.is_ward ? 'border-primary bg-primary bg-opacity-10' : 'border-light'">
+                                                    <input class="form-check-input ms-0 mt-0" type="checkbox" id="wardCheck" x-model="placement.is_ward" style="width: 1.25em; height: 1.25em; cursor: pointer;">
+                                                    <label class="form-check-label fw-medium w-100" for="wardCheck" style="cursor: pointer; font-size: 0.9rem;">
+                                                        I confirm that the applicant is my direct ward/child.
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div x-show="currentStep === 5" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Review &amp; Final Lock Submission</h2>
+                                    <p class="text-muted small">Verify every section, accept the declarations, and lock the application for HR verification.</p>
+                                </div>
+
+                                <!-- HARD VALIDATION GATE: blocks submission until every mandatory item exists -->
+                                <div x-show="!isReadyToSubmit" x-transition.opacity class="rounded-4 p-3 mb-4" style="background-color: #FDECEE; border: 1px solid rgba(201, 20, 44, 0.25); color: var(--dmrc-crimson);">
+                                    <div class="d-flex align-items-center gap-2 fw-bold mb-2" style="font-size: 0.88rem;">
+                                        <i class="bi bi-x-octagon-fill"></i> Submission blocked — mandatory items are missing
+                                    </div>
+                                    <template x-for="group in missingByStep" :key="group.step">
+                                        <div class="mb-2">
+                                            <div class="fw-bold text-uppercase" style="font-size: 0.68rem; letter-spacing: 0.04em; opacity: 0.8;" x-text="'Step ' + group.step + ' · ' + group.title"></div>
+                                            <div class="d-flex flex-wrap gap-2 mt-1">
+                                                <template x-for="item in group.items" :key="item">
+                                                    <button type="button" class="missing-link" @click="goToStep(group.step)" x-text="item"></button>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <div class="mt-2" style="font-size: 0.72rem; opacity: 0.75;">Click any item above to jump to that step and complete it.</div>
+                                </div>
+
+                                <!-- MASTER SUMMARY: 4-section checklist of the full application -->
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <span class="text-muted fw-medium" style="font-size: 0.78rem;">
+                                        <i class="bi bi-list-check me-1"></i>Review all 4 sections below — click a row to expand it.
+                                    </span>
+                                    <button type="button" class="btn btn-link p-0 fw-bold text-decoration-none" style="font-size: 0.78rem; color: var(--dmrc-blue);"
+                                            @click="setAllSections(!allSectionsOpen)" x-text="allSectionsOpen ? 'Collapse All' : 'Expand All'"></button>
+                                </div>
+
+                                <!-- SECTION 1: STUDENT DETAILS -->
+                                <div class="review-accordion mb-2">
+                                    <button type="button" class="review-head" @click="toggleSection(1)">
+                                        <span class="rev-badge">1</span>
+                                        <span class="fw-bold">Student Details</span>
+                                        <span class="chip ms-auto" :class="isSectionComplete(1) ? 'chip-complete' : 'chip-incomplete'" x-text="isSectionComplete(1) ? 'Complete' : 'Incomplete'"></span>
+                                        <i class="bi bi-chevron-down rev-chevron" :class="reviewSections[1] ? 'open' : ''"></i>
+                                    </button>
+                                    <div class="review-body" x-show="reviewSections[1]" x-transition.opacity.duration.150ms>
+                                        <div class="rev-row"><span class="rev-label">Full Name</span><span class="rev-value" x-text="displayValue(student.fullName)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Father's Name</span><span class="rev-value" x-text="displayValue(student.fathersName)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Gender</span><span class="rev-value" x-text="displayValue(student.gender)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Date of Birth</span><span class="rev-value" x-text="displayDate(student.dateOfBirth)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Mobile Number</span><span class="rev-value" x-text="displayValue(student.mobile_number)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Email ID</span><span class="rev-value" x-text="displayValue(student.personal_email)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Permanent Address</span><span class="rev-value" x-text="displayValue(student.permanent_address)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Emergency Contact</span><span class="rev-value" x-text="displayValue(student.emergency_contact_name)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Emergency Mobile</span><span class="rev-value" x-text="displayValue(student.emergency_contact_mobile)"></span></div>
+                                    </div>
+                                </div>
+
+                                <!-- SECTION 2: ACADEMIC MATRIX -->
+                                <div class="review-accordion mb-2">
+                                    <button type="button" class="review-head" @click="toggleSection(2)">
+                                        <span class="rev-badge">2</span>
+                                        <span class="fw-bold">Academic Matrix</span>
+                                        <span class="chip ms-auto" :class="isSectionComplete(2) ? 'chip-complete' : 'chip-incomplete'" x-text="isSectionComplete(2) ? 'Complete' : 'Incomplete'"></span>
+                                        <i class="bi bi-chevron-down rev-chevron" :class="reviewSections[2] ? 'open' : ''"></i>
+                                    </button>
+                                    <div class="review-body" x-show="reviewSections[2]" x-transition.opacity.duration.150ms>
+                                        <div class="rev-row"><span class="rev-label">University</span><span class="rev-value" x-text="displayValue(academic.university_name)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">College / Institute</span><span class="rev-value" x-text="displayValue(academic.college_name)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Course (Degree)</span><span class="rev-value" x-text="displayValue(displayCourse())"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Branch / Specialization</span><span class="rev-value" x-text="displayValue(displayBranch())"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Current Standing</span><span class="rev-value" x-text="displayValue(displaySemester())"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Current Score</span><span class="rev-value" x-text="displayValue(displayScore())"></span></div>
+                                    </div>
+                                </div>
+
+                                <!-- SECTION 3: DOCUMENT VAULT (with live previews) -->
+                                <div class="review-accordion mb-2">
+                                    <button type="button" class="review-head" @click="toggleSection(3)">
+                                        <span class="rev-badge">3</span>
+                                        <span class="fw-bold">Document Vault</span>
+                                        <span class="chip ms-auto" :class="isSectionComplete(3) ? 'chip-complete' : 'chip-incomplete'" x-text="getUploadedCount() + '/5 Uploaded'"></span>
+                                        <i class="bi bi-chevron-down rev-chevron" :class="reviewSections[3] ? 'open' : ''"></i>
+                                    </button>
+                                    <div class="review-body" x-show="reviewSections[3]" x-transition.opacity.duration.150ms>
+                                        <template x-for="pair in Object.entries(documentLabels)" :key="pair[0]">
+                                            <div class="rev-row">
+                                                <span class="rev-label" x-text="pair[1]"></span>
+                                                <span class="rev-value">
+                                                    <template x-if="documents[pair[0]]">
+                                                        <span class="d-inline-flex align-items-center gap-2">
+                                                            <i class="bi bi-file-earmark-check-fill" style="color: var(--dmrc-emerald);"></i>
+                                                            <span class="text-truncate" style="max-width: 200px;" x-text="documents[pair[0]].name"></span>
+                                                            <button type="button" class="btn-eye" @click="previewDocument(pair[0])" title="Preview Document"><i class="bi bi-eye-fill"></i></button>
+                                                        </span>
+                                                    </template>
+                                                    <template x-if="!documents[pair[0]]">
+                                                        <span class="chip chip-incomplete">Missing</span>
+                                                    </template>
+                                                </span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <!-- SECTION 4: PLACEMENT DIRECTIVES -->
+                                <div class="review-accordion mb-2">
+                                    <button type="button" class="review-head" @click="toggleSection(4)">
+                                        <span class="rev-badge">4</span>
+                                        <span class="fw-bold">Internship Details</span>
+                                        <span class="chip ms-auto" :class="isSectionComplete(4) ? 'chip-complete' : 'chip-incomplete'" x-text="isSectionComplete(4) ? 'Complete' : 'Incomplete'"></span>
+                                        <i class="bi bi-chevron-down rev-chevron" :class="reviewSections[4] ? 'open' : ''"></i>
+                                    </button>
+                                    <div class="review-body" x-show="reviewSections[4]" x-transition.opacity.duration.150ms>
+                                        <div class="rev-row">
+                                            <span class="rev-label">Target Cycle</span>
+                                            <span class="rev-value" x-text="placement.sessionTerm ? placement.sessionTerm + ' 2026' : '—'"></span>
+                                        </div>
+                                        <div class="rev-row">
+                                            <span class="rev-label">Target Department</span>
+                                            <span class="rev-value">
+                                                <span x-text="displayValue(placement.department_id)"></span>
+                                                <span x-show="isWaitlisted" class="chip chip-incomplete ms-2">Waitlist</span>
+                                            </span>
+                                        </div>
+                                        <div class="rev-row"><span class="rev-label">Duration</span><span class="rev-value" x-text="placement.duration_weeks ? placement.duration_weeks + ' Weeks' : '—'"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Preferred Date of Joining</span><span class="rev-value" x-text="displayDate(placement.requested_doj)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Referrer</span><span class="rev-value" x-text="sessionEmployee.name + ' (' + sessionEmployee.empId + ')'"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Referrer Designation</span><span class="rev-value" x-text="sessionEmployee.designation + ' · ' + sessionEmployee.department"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Applicant is Direct Ward</span><span class="rev-value" x-text="placement.is_ward ? 'Yes' : 'No'"></span></div>
+                                    </div>
+                                </div>
+
+                                <!-- FINAL DECLARATIONS: feeds applications.accepted_declarations -->
+                                <div class="card bg-light border-0 rounded-4 overflow-hidden mt-4" :class="!isReadyToSubmit ? 'decl-locked' : ''">
+                                    <div class="p-3 bg-secondary bg-opacity-10 border-bottom border-secondary border-opacity-10 d-flex align-items-center gap-2">
+                                        <i class="bi bi-shield-fill-check text-secondary"></i>
+                                        <span class="fw-bold text-dark" style="font-size: 0.85rem;">Final Declarations</span>
+                                    </div>
+                                    <div class="p-4">
+                                        <p class="fw-bold mb-3" style="font-size: 0.85rem;">By submitting this application, I (the referring employee) formally declare and agree to the following:</p>
+                                        <ul class="mb-4 ps-3 d-flex flex-column gap-2" style="font-size: 0.82rem; line-height: 1.5;">
+                                            <li><strong>Information Accuracy:</strong> All information, academic data, and uploaded documents provided in this referral application are true, complete, and accurate to the best of my knowledge.</li>
+                                            <li><strong>Bonafide Status:</strong> The applicant is a bonafide student currently enrolled in the declared academic institution and program.</li>
+                                            <li><strong>Exclusivity:</strong> The applicant is not currently employed, nor engaged in any other full-time internship or professional training assignment that would conflict with this program.</li>
+                                            <li><strong>Compliance:</strong> I understand and will ensure the applicant strictly adheres to all standard operating procedures, safety guidelines, and the code of conduct as outlined in the <a href="https://www.delhimetrorail.com" target="_blank" rel="noopener" class="fw-bold" style="color: var(--dmrc-blue);">Official DMRC Policies &amp; Rules</a>.</li>
+                                        </ul>
+                                        <div class="form-check p-3 rounded-3 border bg-white d-flex align-items-center gap-2" :class="acceptedDeclarations ? 'border-primary bg-primary bg-opacity-10' : 'border-light'">
+                                            <input class="form-check-input ms-0 mt-0" type="checkbox" id="declCheck" x-model="acceptedDeclarations" :disabled="!isReadyToSubmit" style="width: 1.25em; height: 1.25em; cursor: pointer;">
+                                            <label class="form-check-label fw-medium w-100" for="declCheck" style="cursor: pointer; font-size: 0.9rem;">
+                                                I have read and agree to all the declarations stated above.
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- WAITLIST REMINDER: final clarity before the lock -->
+                                <div x-show="isWaitlisted" x-transition.opacity style="display: none;">
+                                    <div class="d-flex align-items-center gap-2 mt-3 p-3 rounded-3 shadow-sm" style="font-size: 0.8rem; border: 1px solid #FDE047; background-color: #FEF9C3; color: #854D0E;">
+                                        <i class="bi bi-exclamation-triangle-fill fs-6"></i>
+                                        <div style="line-height: 1.3;"><strong>High Demand:</strong> <span x-text="placement.department_id"></span> is currently at full capacity. Submitting now will place this application on the official <strong>Waitlist</strong>.</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <div class="card border-0 shadow-sm p-3 mt-3 rounded-4 bg-white d-flex flex-row align-items-center justify-content-between">
+                            <button type="button" class="btn btn-outline-secondary px-4 py-2" style="font-size: 0.88rem; font-weight: 600;"
+                                    @click="prevStep()" x-show="currentStep > 1">
+                                <i class="bi bi-arrow-left me-2"></i> Save & Back
+                            </button>
+                            <div x-show="currentStep === 1"></div>
+                            
+                            <button type="button" class="btn btn-primary px-4 py-2 ms-auto" style="font-size: 0.88rem; font-weight: 600; background-color: var(--dmrc-blue); border-color: var(--dmrc-blue);"
+                                    @click="nextStep()" x-show="currentStep < totalSteps">
+                                Save & Next <i class="bi bi-arrow-right ms-2"></i>
+                            </button>
+
+                            <button type="button" class="btn btn-dmrc-primary px-4 py-2 ms-auto" style="font-size: 0.88rem; font-weight: 600;"
+                                    x-show="currentStep === totalSteps"
+                                    :disabled="!canSubmit"
+                                    :title="!isReadyToSubmit ? 'Complete all mandatory items first' : (!acceptedDeclarations ? 'Accept the declarations to enable submission' : 'Lock and submit this application')"
+                                    @click="requestSubmit()">
+                                <i class="bi bi-lock-fill me-2"></i> Submit Application
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="col-lg-4">
+                        <div class="sticky-top" style="top: 20px; z-index: 10;">
+                            <div class="card border-0 rounded-4 overflow-hidden shadow" style="box-shadow: var(--shadow-ticket) !important;">
+                                <div class="p-3 text-white" style="background: linear-gradient(135deg, var(--dmrc-blue), var(--dmrc-blue-dark));">
+                                    <div class="text-uppercase tracking-wider fw-medium" style="font-size: 0.65rem; letter-spacing: 0.08em; opacity: 0.85;">Operational Ticket Record</div>
+                                    <div class="fw-bold mt-1" style="font-family: var(--font-display); font-size: 1rem;" x-text="applicationCode"></div>
+                                </div>
+
+                                <div style="height: 12px; background-color: #fff; position: relative;">
+                                    <div style="position: absolute; top: 5px; left: 0; right: 0; height: 1.5px; background: repeating-linear-gradient(to right, var(--border-light) 0, var(--border-light) 6px, transparent 6px, transparent 12px);"></div>
+                                </div>
+
+                                <div class="bg-white px-3 pt-3 pb-2">
+                                    <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.82rem;">
+                                        <span class="text-muted">Target Cycle</span>
+                                        <span class="fw-bold text-dark text-end" x-text="placement.sessionTerm ? placement.sessionTerm + ' 2026' : '—'"></span>
+                                    </div>
+                                    <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.82rem;">
+                                        <span class="text-muted">Candidate</span>
+                                        <span class="fw-bold text-dark text-end" x-text="student.fullName || '—'"></span>
+                                    </div>
+                                    <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.82rem;">
+                                        <span class="text-muted">Target Dept.</span>
+                                        <span class="fw-bold text-dark text-end" x-text="placement.department_id || '—'"></span>
+                                    </div>
+                                    <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.82rem;">
+                                        <span class="text-muted">Vault Status</span>
+                                        <span class="fw-bold text-dark text-end" 
+                                              :class="getUploadedCount() === 5 ? 'text-success' : 'text-warning'"
+                                              x-text="getUploadedCount() + '/5 Uploaded'"></span>
+                                    </div>
+                                    
+                                    <div class="text-center py-2 my-2 rounded-pill fw-bold" style="font-size: 0.72rem; background-color: var(--dmrc-blue-soft); color: var(--dmrc-blue);">
+                                        RECORD STATUS: TRANSACTION DRAFT
+                                    </div>
+                                </div>
+
+                                <div style="height: 12px; background-color: #fff; position: relative;">
+                                    <div style="position: absolute; top: 5px; left: 0; right: 0; height: 1.5px; background: repeating-linear-gradient(to right, var(--border-light) 0, var(--border-light) 6px, transparent 6px, transparent 12px);"></div>
+                                </div>
+
+                                <div class="bg-white p-3 d-flex align-items-center gap-2 border-top" style="font-size: 0.74rem; color: var(--text-muted);">
+                                    <i class="bi bi-cloud-check-fill text-success" style="color: var(--dmrc-emerald) !important;"></i>
+                                    <span>Auto-Sync Active · <span class="fw-medium text-dark" x-text="saveStatus"></span></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </template>
+
+    <template x-if="portalState === 'submitted'">
+        <div class="container-xl py-5 my-4 d-flex justify-content-center" x-transition>
+            <div class="card border-0 shadow-lg rounded-4 p-5 text-center" style="max-width: 560px; width: 100%;">
+                <div class="success-check mx-auto mb-4"><i class="bi bi-check-lg"></i></div>
+
+                <h1 class="h3 fw-bold mb-2" style="font-family: var(--font-display);">Thank You!</h1>
+                <p class="text-muted mb-4">The referral application has been submitted successfully and is now locked for HR verification.</p>
+
+                <div class="rounded-4 p-3 mb-3" style="background-color: var(--dmrc-blue-soft);">
+                    <div class="text-uppercase fw-medium" style="font-size: 0.65rem; letter-spacing: 0.08em; color: var(--dmrc-blue); opacity: 0.85;">Application Ticket ID</div>
+                    <div class="fw-bold mt-1" style="font-family: var(--font-display); font-size: 1.45rem; color: var(--dmrc-blue); letter-spacing: 0.02em;" x-text="finalTicket"></div>
+                </div>
+
+                <div class="d-flex justify-content-center mb-3">
+                    <span class="status-pill d-inline-flex align-items-center gap-2">
+                        <i class="bi bi-hourglass-split"></i> Status: Submitted · Approval Pending
+                    </span>
+                </div>
+
+                <div x-show="wasWaitlisted" x-transition.opacity style="display: none;">
+                    <div class="d-flex align-items-start gap-2 text-start rounded-3 p-3 mb-3" style="background-color: var(--dmrc-amber-soft); color: var(--dmrc-amber); border: 1px solid #F2D5AE; font-size: 0.8rem; line-height: 1.4;">
+                        <i class="bi bi-exclamation-triangle-fill mt-1 flex-shrink-0"></i>
+                        <div><strong>Waitlisted:</strong> The selected department is at full capacity. This application has been placed on the official waitlist and will be processed automatically if a seat becomes available.</div>
+                    </div>
+                </div>
+
+                <div class="text-muted mb-4" style="font-size: 0.75rem;">
+                    Submitted on <span class="fw-medium text-dark" x-text="submittedAt"></span><br>
+                    Referred by <span class="fw-medium text-dark" x-text="sessionEmployee.name + ' (' + sessionEmployee.empId + ')'"></span>
+                </div>
+
+                <button type="button" class="btn btn-dmrc-primary btn-lg px-5 py-3 rounded-pill shadow fw-bold mx-auto" @click="resetPortal()">
+                    <i class="bi bi-house-door-fill me-2"></i> Back to Dashboard
+                </button>
+            </div>
+        </div>
+    </template>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
