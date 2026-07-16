@@ -1,0 +1,295 @@
+/* ==================================================================
+   DMRC HR COMMAND CENTER - MASTER STYLESHEET
+   Extending Phase 1 Design System Tokens for Enterprise UI
+================================================================== */
+:root {
+  /* Brand Tokens */
+  --dmrc-blue: #0A3284;       
+  --dmrc-blue-dark: #06235C;  
+  --dmrc-blue-soft: #EBF1FC;  
+  
+  --dmrc-crimson: #C9142C;    
+  --dmrc-emerald: #0F8056;    
+  --dmrc-emerald-soft: #E6F5EE;
+  
+  --dmrc-amber: #C26600;      
+  --dmrc-amber-soft: #FFF4E5;
+  
+  /* UI Surface Tokens */
+  --bg-app: #F4F6FA;
+  --bg-surface: #FFFFFF;
+  --text-main: #1C2434;
+  --text-muted: #64748B;
+  --border-light: #E2E8F0;
+
+  /* Dashboard Specific Measurements */
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 80px;
+  --header-height: 70px;
+
+  /* Typography */
+  --font-display: 'Sora', 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+}
+
+body {
+  background-color: var(--bg-app);
+  font-family: var(--font-body);
+  color: var(--text-main);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, .brand-text {
+  font-family: var(--font-display);
+  color: var(--text-main);
+}
+
+/* ==================================================================
+   1. UNIFIED LAYOUT ARCHITECTURE (WITH COLLAPSE LOGIC)
+================================================================== */
+.sidebar {
+  width: var(--sidebar-width);
+  height: 100vh;
+  position: fixed;
+  top: 0;
+  left: 0;
+  background-color: var(--bg-surface);
+  border-right: 1px solid var(--border-light);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow-x: hidden;
+}
+
+.main-content {
+  margin-left: var(--sidebar-width);
+  padding: 2.5rem 3rem;
+  min-height: 100vh;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Collapsed States */
+.sidebar.collapsed {
+  width: var(--sidebar-collapsed-width);
+}
+
+.main-content.expanded {
+  margin-left: var(--sidebar-collapsed-width);
+}
+
+.sidebar.collapsed .brand-text,
+.sidebar.collapsed .nav-text {
+  display: none;
+}
+
+.sidebar.collapsed .nav-link {
+  justify-content: center !important;
+  padding: 12px 0;
+}
+
+.sidebar.collapsed .nav-link i {
+  margin-right: 0 !important;
+  font-size: 1.25rem;
+}
+
+/* Sidebar Logo Styling */
+.brand-logo {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  transition: all 0.3s ease;
+}
+
+.sidebar.collapsed .brand-logo {
+  width: 40px; 
+  height: 40px;
+}
+
+/* ==================================================================
+   2. SIDEBAR NAVIGATION
+================================================================== */
+.sidebar .nav-link {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.92rem;
+  padding: 12px 20px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar .nav-link:hover {
+  background-color: #F8FAFC;
+  color: var(--dmrc-blue);
+  transform: translateX(2px);
+}
+
+.sidebar .nav-link.active {
+  background-color: var(--dmrc-blue) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(10, 50, 132, 0.15);
+}
+
+/* ==================================================================
+   3. VERIFICATION QUEUE - BROWSER TABS
+================================================================== */
+.nav-tabs {
+  border-bottom: 1px solid var(--border-light);
+  gap: 8px;
+}
+
+.nav-tabs .nav-item {
+  margin-bottom: -1px;
+}
+
+.nav-tabs .nav-link {
+  color: var(--text-muted);
+  border: none;
+  border-bottom: 3px solid transparent;
+  font-weight: 600;
+  padding: 12px 24px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: transparent;
+}
+
+.nav-tabs .nav-link:hover {
+  color: var(--text-main);
+  border-bottom-color: #CBD5E1;
+}
+
+.nav-tabs .nav-link.active {
+  color: var(--dmrc-blue);
+  border-bottom-color: var(--dmrc-blue);
+}
+
+/* ==================================================================
+   4. FILTER & SORT DRAWER
+================================================================== */
+.filter-drawer {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03);
+}
+
+.filter-drawer .form-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.filter-drawer .form-select {
+  font-size: 0.85rem;
+  border-color: var(--border-light);
+}
+
+.filter-drawer .form-select:focus {
+  border-color: var(--dmrc-blue);
+  box-shadow: 0 0 0 3px rgba(10, 50, 132, 0.12);
+}
+
+/* ==================================================================
+   5. MASTER DATA GRID (TABLE)
+================================================================== */
+.table-hover tbody tr {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.table-hover tbody tr:hover {
+  background-color: #F8FAFC;
+}
+
+.table th {
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  padding: 14px 16px;
+  border-bottom-width: 1px;
+  background-color: #F8FAFC;
+  white-space: nowrap; /* PREVENTS HEADER WRAP */
+}
+
+.table td {
+  padding: 16px;
+  font-size: 0.9rem;
+  color: var(--text-main);
+  border-bottom-color: var(--border-light);
+  vertical-align: middle;
+  white-space: nowrap; /* PREVENTS DATA WRAP */
+}
+
+/* ==================================================================
+   6. HR ONBOARDING & OFFCANVAS DRAWER
+================================================================== */
+.hr-drawer {
+  width: 550px !important;
+  border-left: 1px solid var(--border-light);
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.05);
+}
+
+.drawer-header-brand {
+  background: linear-gradient(135deg, var(--dmrc-blue), var(--dmrc-blue-dark));
+  color: white;
+  padding: 24px;
+}
+
+.drawer-header-brand .ticket-id {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.drawer-body-scroll {
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.onboarding-panel {
+  background-color: #F8FAFC;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 24px;
+}
+
+.onboarding-panel h4 {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--dmrc-blue);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.onboarding-panel .form-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+/* ==================================================================
+   7. FLATPICKR CALENDAR HIGHLIGHT OVERRIDES
+================================================================== */
+.ahr-approved-date {
+  background-color: var(--dmrc-emerald-soft) !important;
+  color: var(--dmrc-emerald) !important;
+  font-weight: bold !important;
+  border: 1px solid var(--dmrc-emerald) !important;
+  border-radius: 4px;
+}
