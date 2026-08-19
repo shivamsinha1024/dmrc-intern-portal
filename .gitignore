@@ -1,0 +1,26 @@
+# Mac System Files
+.DS_Store
+**/.DS_Store
+
+# Environment Variables & Secrets
+.env
+Back End/.env
+
+# Python / Django
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+*.sqlite3
+
+# Editor / IDE
+.vscode/
+
+# 🛑 SENSITIVE USER DATA & GENERATED FILES (DO NOT PUSH) 🛑
+Back End/protected_documents/
+Back End/generated_documents/
+Back End/media/
+Back End/signatures/
+Front End/Phase-1-User-Portal/Dummy Docs/
+Front End/Phase-2-HR-Dashboard/Dummy Docs/

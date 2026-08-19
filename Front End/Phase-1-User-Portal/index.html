@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DMRC Operations Control | Application Portal</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+
+    <link rel="stylesheet" href="styles.css">
+
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="app.js"></script>
+    
+    <style>
+        .drawer-timeline { border-left: 2px solid var(--border-light); margin-left: 12px; padding-left: 20px; position: relative; }
+        .drawer-timeline-item { position: relative; margin-bottom: 20px; }
+        .drawer-timeline-item::before { content: ''; position: absolute; left: -27px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background-color: var(--dmrc-blue); border: 2px solid #fff; }
+        .drawer-timeline-item:last-child { margin-bottom: 0; }
+        .drawer-timeline-date { font-size: 0.72rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .drawer-timeline-title { font-size: 0.88rem; font-weight: 700; color: var(--text-main); margin: 2px 0; }
+        .drawer-timeline-desc { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; margin: 0; }
+        
+        .dash-nav-link { color: var(--text-muted); font-weight: 600; padding: 12px 20px; border-bottom: 3px solid transparent; cursor: pointer; transition: all 0.2s; }
+        .dash-nav-link:hover { color: var(--dmrc-blue); }
+        .dash-nav-link.active { color: var(--dmrc-blue); border-bottom-color: var(--dmrc-blue); }
+    </style>
+    <style>
+        /* Approved cycle dates in the College Referrals calendar. Highlighted
+           rather than enforced: any date remains selectable. */
+        .flatpickr-day.doj-approved-date {
+            background: rgba(25, 135, 84, 0.14);
+            border-color: rgba(25, 135, 84, 0.35);
+            font-weight: 700;
+            color: #146c43;
+        }
+        .flatpickr-day.doj-approved-date:hover { background: rgba(25, 135, 84, 0.28); }
+        .flatpickr-day.doj-approved-date.selected { background: #0d6efd; color: #fff; border-color: #0d6efd; }
+    </style>
+</head>
+<body x-data="wizardEngine">
+
+    <!-- Header -->
+    <header class="py-3 bg-white border-bottom shadow-sm">
+        <div class="container-fluid px-4 d-flex align-items-center justify-content-between">
+            <div class="d-flex align-items-center gap-3">
+                <img src="dmrc-logo.png" alt="DMRC logo" class="brand-logo" style="flex-shrink: 0;">
+                <div style="line-height: 1.1;">
+                    <span class="fs-5 fw-bold" style="color: var(--dmrc-blue) !important; font-family: var(--font-display);">DMRC</span><br>
+                    <span class="text-muted" style="font-size: 0.65rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;">Intern Referral Portal</span>
+                </div>
+            </div>
+            
+            <div class="d-flex gap-3 align-items-center">
+                <div class="d-flex align-items-center gap-2 bg-light px-3 py-1 rounded border">
+                    <i class="bi bi-person-badge text-secondary"></i>
+                    <div class="text-end" style="line-height: 1.2;">
+                        <div class="fw-bold small text-uppercase" x-text="sessionEmployee.name"></div>
+                        <div class="text-muted" style="font-size: 0.7rem;" x-text="sessionEmployee.department + ' · ' + sessionEmployee.empId"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <template x-if="portalState === 'dashboard'">
+        <div class="container-xl py-5" x-transition>
+            <div class="d-flex flex-wrap justify-content-between align-items-end mb-4 gap-3">
+                <div>
+                    <h1 class="h3 fw-bold mb-2" style="font-family: var(--font-display);">My Referrals</h1>
+                    <p class="text-muted mb-0">Manage your candidate applications and track HR verification statuses.</p>
+                </div>
+                <button type="button" class="btn btn-dmrc-primary px-4 py-2 fw-bold shadow-sm" @click="startNewApplication()">
+                    <i class="bi bi-plus-lg me-2"></i> Start New Referral
+                </button>
+            </div>
+
+            <div class="row g-3 mb-4">
+                <div class="col-md-4">
+                    <div class="card border-0 shadow-sm rounded-4 p-3 d-flex flex-row align-items-center gap-3">
+                        <div class="rounded-circle d-flex align-items-center justify-content-center" style="width: 48px; height: 48px; background-color: var(--dmrc-blue-soft); color: var(--dmrc-blue);">
+                            <i class="bi bi-folder-check fs-4"></i>
+                        </div>
+                        <div>
+                            <div class="text-muted fw-bold" style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;">Total Submitted</div>
+                            <div class="fs-4 fw-bold" x-text="applications.filter(a => a.tab === 'submitted').length"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card border-0 shadow-sm rounded-4 p-3 d-flex flex-row align-items-center gap-3">
+                        <div class="rounded-circle d-flex align-items-center justify-content-center" style="width: 48px; height: 48px; background-color: #F8FAFC; color: #64748B;">
+                            <i class="bi bi-pencil-square fs-4"></i>
+                        </div>
+                        <div>
+                            <div class="text-muted fw-bold" style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;">Active Drafts</div>
+                            <div class="fs-4 fw-bold" x-text="applications.filter(a => a.tab === 'saved').length"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card border-0 shadow-sm rounded-4 p-3 d-flex flex-row align-items-center gap-3">
+                        <div class="rounded-circle d-flex align-items-center justify-content-center bg-danger bg-opacity-10 text-danger" style="width: 48px; height: 48px;">
+                            <i class="bi bi-exclamation-octagon fs-4"></i>
+                        </div>
+                        <div>
+                            <div class="text-danger fw-bold" style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;">Action Required</div>
+                            <div class="fs-4 fw-bold text-danger" x-text="applications.filter(a => a.tab === 'reopened').length"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card border-0 shadow-sm rounded-4 overflow-hidden bg-white">
+                
+                <div class="d-flex flex-wrap border-bottom bg-light px-3 pt-2 align-items-center justify-content-between gap-3">
+                    <div class="d-flex">
+                        <div class="dash-nav-link" :class="activeTab === 'submitted' ? 'active' : ''" @click="activeTab = 'submitted'; searchQuery = '';">
+                            Submitted <span class="badge bg-secondary ms-1 rounded-pill" x-text="applications.filter(a => a.tab === 'submitted').length"></span>
+                        </div>
+                        <div class="dash-nav-link" :class="activeTab === 'reopened' ? 'active' : ''" @click="activeTab = 'reopened'; searchQuery = '';">
+                            Re-Opened <span class="badge bg-danger ms-1 rounded-pill" x-show="applications.filter(a => a.tab === 'reopened').length > 0" x-text="applications.filter(a => a.tab === 'reopened').length"></span>
+                        </div>
+                        <div class="dash-nav-link" :class="activeTab === 'saved' ? 'active' : ''" @click="activeTab = 'saved'; searchQuery = '';">
+                            Saved Drafts <span class="badge bg-secondary ms-1 rounded-pill" x-text="applications.filter(a => a.tab === 'saved').length"></span>
+                        </div>
+                    </div>
+                    
+                    <div class="pb-2">
+                        <div class="input-group input-group-sm" style="width: 250px;">
+                            <span class="input-group-text bg-white border-end-0"><i class="bi bi-search text-muted"></i></span>
+                            <input type="text" class="form-control border-start-0 ps-0" placeholder="Search Name or Ticket ID..." x-model="searchQuery">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0" style="font-size: 0.88rem;">
+                            <thead class="table-light">
+                                <tr>
+                                    <th class="text-muted fw-bold py-3 ps-4" style="font-size: 0.75rem; text-transform: uppercase;">Candidate</th>
+                                    <th class="text-muted fw-bold py-3" style="font-size: 0.75rem; text-transform: uppercase;">Ticket ID / Dept</th>
+                                    <th class="text-muted fw-bold py-3" style="font-size: 0.75rem; text-transform: uppercase;">Date</th>
+                                    <th class="text-muted fw-bold py-3" style="font-size: 0.75rem; text-transform: uppercase;">Status</th>
+                                    <th class="text-muted fw-bold py-3 text-end pe-4" style="font-size: 0.75rem; text-transform: uppercase;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-if="activeTab === 'submitted'">
+                                    <template x-for="app in submittedApps" :key="app.id">
+                                        <tr>
+                                            <td class="ps-4 py-3">
+                                                <div class="fw-bold text-dark text-uppercase" x-text="app.student.salutation ? app.student.salutation + ' ' + app.student.fullName : app.student.fullName"></div>
+                                                <div class="text-muted" style="font-size: 0.75rem;" x-text="app.targetCycle"></div>
+                                            </td>
+                                            <td>
+                                                <div class="fw-bold" style="font-family: var(--font-display); color: var(--dmrc-blue);" x-text="app.ticketId"></div>
+                                                <div class="text-muted" style="font-size: 0.75rem;" x-text="'Dept: ' + app.dept"></div>
+                                            </td>
+                                            <td><div class="fw-medium text-dark" x-text="app.createdDate"></div></td>
+                                            <td>
+                                                <span class="badge" :class="app.badge" style="padding: 6px 10px;" x-text="app.dbStatus || app.status"></span>
+                                                <template x-if="app.timeline && app.timeline.some(e => e.title.includes('Resubmitted'))">
+                                                    <div class="mt-1">
+                                                        <span class="badge bg-secondary bg-opacity-10 text-secondary border border-secondary border-opacity-25" style="font-size: 0.65rem;">
+                                                            <i class="bi bi-arrow-repeat me-1"></i>Resubmitted
+                                                        </span>
+                                                    </div>
+                                                </template>
+                                            </td>
+                                            <td class="text-end pe-4 text-nowrap">
+                                                <button type="button" class="btn btn-sm btn-outline-danger fw-bold me-1" x-show="canWithdraw(app)" @click="confirmWithdraw(app)">
+                                                    <i class="bi bi-x-octagon"></i> Withdraw
+                                                </button>
+                                                <button type="button" class="btn btn-sm btn-outline-primary fw-bold" @click="viewTicket(app)">
+                                                    <i class="bi bi-eye-fill me-1"></i> View
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </template>
+                                <template x-if="activeTab === 'submitted' && submittedApps.length === 0">
+                                    <tr><td colspan="5" class="text-center py-5 text-muted">No applications match your search.</td></tr>
+                                </template>
+
+                                <template x-if="activeTab === 'reopened'">
+                                    <template x-for="app in reopenedApps" :key="app.id">
+                                        <tr>
+                                            <td class="ps-4 py-3">
+                                                <div class="fw-bold text-dark text-uppercase" x-text="app.student.salutation ? app.student.salutation + ' ' + app.student.fullName : app.student.fullName"></div>
+                                                <div class="text-muted" style="font-size: 0.75rem;" x-text="app.targetCycle"></div>
+                                            </td>
+                                            <td>
+                                                <div class="fw-bold" style="font-family: var(--font-display); color: var(--dmrc-crimson);" x-text="app.ticketId"></div>
+                                                <div class="text-muted text-truncate" style="font-size: 0.75rem; max-width: 200px;" x-text="app.remarks" :title="app.remarks"></div>
+                                            </td>
+                                            <td><div class="fw-medium text-dark" x-text="app.createdDate"></div></td>
+                                            <td><span class="badge" :class="app.badge" style="padding: 6px 10px;"><i class="bi bi-exclamation-circle me-1"></i> Action Required</span></td>
+                                            <td class="text-end pe-4 text-nowrap">
+                                                <button type="button" class="btn btn-sm btn-outline-danger fw-bold me-1" x-show="canWithdraw(app)" @click="confirmWithdraw(app)">
+                                                    <i class="bi bi-x-octagon"></i> Withdraw
+                                                </button>
+                                                <button type="button" class="btn btn-sm btn-danger fw-bold" @click="fixApplication(app)">
+                                                    <i class="bi bi-wrench me-1"></i> Fix App
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </template>
+                                <template x-if="activeTab === 'reopened' && reopenedApps.length === 0">
+                                    <tr><td colspan="5" class="text-center py-5 text-muted">No applications match your search.</td></tr>
+                                </template>
+
+                                <template x-if="activeTab === 'saved'">
+                                    <template x-for="app in savedApps" :key="app.id">
+                                        <tr>
+                                            <td class="ps-4 py-3">
+                                                <div class="fw-bold text-dark text-uppercase" x-text="(app.student.salutation ? app.student.salutation + ' ' + app.student.fullName : app.student.fullName) || '—'"></div>
+                                                <div class="text-muted" style="font-size: 0.75rem;" x-text="app.targetCycle"></div>
+                                            </td>
+                                            <td>
+                                                <div class="text-muted fst-italic" style="font-size: 0.8rem;">Pending Issue</div>
+                                            </td>
+                                            <td><div class="fw-medium text-dark" x-text="app.createdDate"></div></td>
+                                            <td><span class="badge" :class="app.badge" style="padding: 6px 10px;">Draft</span></td>
+                                            <td class="text-end pe-4">
+                                                <!-- Disabled with the reason on hover when the cycle has
+                                                     closed or been archived, rather than letting the click
+                                                     fail. A draft cannot outlive its cycle. -->
+                                                <button type="button" class="btn btn-sm fw-bold"
+                                                        :class="canResumeDraft(app) ? 'btn-secondary' : 'btn-outline-secondary'"
+                                                        :disabled="!canResumeDraft(app)"
+                                                        :title="draftBlockReason(app)"
+                                                        @click="resumeDraft(app)">
+                                                    <i class="bi bi-play-fill me-1"></i> Resume
+                                                </button>
+                                                <div x-show="!canResumeDraft(app)" style="display:none;"
+                                                     class="small text-danger mt-1" x-text="draftBlockReason(app)"></div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </template>
+                                <template x-if="activeTab === 'saved' && savedApps.length === 0">
+                                    <tr><td colspan="5" class="text-center py-5 text-muted">No drafts match your search.</td></tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template x-if="portalState === 'cycle_select'">
+        <div class="container-xl py-4" x-transition>
+            <button type="button" class="btn btn-outline-secondary btn-sm fw-bold px-3 py-2 mb-4 d-inline-flex align-items-center gap-1 shadow-sm" @click="returnToDashboard()">
+                <i class="bi bi-arrow-left"></i> <span x-text="placement.isInstitutionalMerge ? 'Back to HR Dashboard' : 'Return to Dashboard'"></span>
+            </button>
+
+            <!-- ================= COLLEGE REFERRAL ================= -->
+            <!-- A college referral is ALREADY a filed application: it has a
+                 ticket and its cycle was fixed at intake. So this is a
+                 confirmation, not a choice. The cycle grid, the capacity table
+                 and the application-window gate below are all deliberately
+                 hidden: capacity does not apply (institutional candidates sit
+                 outside the quota), and a closed window must never strand a
+                 candidate already in the pipeline. -->
+            <template x-if="placement.isInstitutionalMerge">
+                <div class="mx-auto" style="max-width: 640px;">
+                    <div class="text-center mb-4 mt-2">
+                        <h1 class="h3 fw-bold mb-2" style="font-family: var(--font-display);">College Referral Application</h1>
+                        <p class="text-muted mx-auto" style="max-width: 520px;">Record the candidate's details and documents. Everything the institution supplied is already filled in.</p>
+                    </div>
+
+                    <div class="card border-0 shadow-sm rounded-4 overflow-hidden mb-4">
+                        <div class="p-3 text-white" style="background: linear-gradient(135deg, var(--dmrc-blue), var(--dmrc-blue-dark));">
+                            <div class="text-uppercase fw-medium" style="font-size: 0.65rem; letter-spacing: 0.08em; opacity: 0.85;">Application Ticket</div>
+                            <div class="fw-bold mt-1" style="font-family: var(--font-display); font-size: 1.15rem;" x-text="applicationCode"></div>
+                        </div>
+                        <div class="bg-white p-4">
+                            <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.9rem;">
+                                <span class="text-muted">Candidate</span>
+                                <span class="fw-bold text-dark text-uppercase text-end" x-text="institutionalCandidate || '—'"></span>
+                            </div>
+                            <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.9rem;">
+                                <span class="text-muted">Institution</span>
+                                <span class="fw-bold text-dark text-uppercase text-end" x-text="academic.college_name || '—'"></span>
+                            </div>
+                            <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.9rem;">
+                                <span class="text-muted">Target Cycle</span>
+                                <span class="fw-bold text-dark text-end" x-text="activeCycle ? activeCycle.name : '—'"></span>
+                            </div>
+                            <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                                <span class="text-muted">Current Stage</span>
+                                <span class="fw-bold text-end" :class="institutionalStatus === 'Ready for Merge' ? 'text-primary' : 'text-success'" x-text="institutionalStatus || '—'"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- The cycle cannot be changed here: it was fixed at intake
+                         and determines the ticket number, the joining dates and
+                         the documents this candidate was asked for. -->
+                    <div class="alert alert-light border small text-muted d-flex align-items-start gap-2 mb-4">
+                        <i class="bi bi-lock-fill mt-1 text-secondary"></i>
+                        <div>The cycle was set when this referral was filed and cannot be changed here. To move the candidate to a different cycle, reject this application and file a fresh intake.</div>
+                    </div>
+
+                    <div class="text-center">
+                        <button type="button" class="btn btn-dmrc-primary btn-lg px-5 py-3 rounded-pill shadow fw-bold" @click="beginWizard()">
+                            <span x-text="institutionalStatus === 'Ready for Merge' ? 'Edit Application' : 'Fill Application'"></span>
+                            <i class="bi bi-arrow-right ms-2"></i>
+                        </button>
+                    </div>
+                </div>
+            </template>
+
+            <!-- ================= EMPLOYEE REFERRAL (unchanged) ================= -->
+            <template x-if="!placement.isInstitutionalMerge">
+            <div>
+            <div class="text-center mb-5 mt-2">
+                <h1 class="h3 fw-bold mb-2" style="font-family: var(--font-display);">Active Registration Window</h1>
+                <p class="text-muted mx-auto" style="max-width: 500px;">The system is currently accepting applications exclusively for the active cycle below.</p>
+            </div>
+
+            <!-- Dynamic Active Cycles Selection Grid -->
+            <div class="row justify-content-center mx-auto" style="max-width: 800px;">
+                <template x-for="cycle in availableActiveCycles" :key="cycle.id">
+                    <div class="col-md-6 mb-3">
+                        <div class="card p-4 rounded-4 text-center option-selection-card shadow-sm" 
+                             :class="activeCycle && activeCycle.id === cycle.id ? 'selected-active' : 'bg-white text-dark border'"
+                             style="cursor: pointer; transition: all 0.2s;"
+                             @click="activeCycle = cycle">
+                            <div class="fs-1 mb-2" :class="activeCycle && activeCycle.id === cycle.id ? 'text-white' : 'text-primary'"><i class="bi bi-calendar2-check-fill"></i></div>
+                            <h2 class="h4 fw-bold mb-1" :class="activeCycle && activeCycle.id === cycle.id ? 'text-white' : 'text-dark'" x-text="cycle.name"></h2>
+                            <span class="badge px-3 py-2 mt-2 rounded-pill fw-semibold" 
+                                  :class="activeCycle && activeCycle.id === cycle.id ? 'bg-white bg-opacity-25 text-white border border-light border-opacity-25' : 'bg-light text-muted border'"
+                                  x-text="'Timeline: ' + displayDate(cycle.start) + ' to ' + displayDate(cycle.end)"></span>
+                            
+                            <!-- Dynamic Availability Badge -->
+                            <div class="mt-2">
+                                <span class="badge" 
+                                      :class="isWithinWindow(cycle) ? 'bg-success' : (getTodayString() < cycle.start ? 'bg-warning text-dark' : 'bg-danger')"
+                                      x-text="isWithinWindow(cycle) ? 'Open Now' : (getTodayString() < cycle.start ? 'Opens Soon' : 'Closed')"></span>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+                <div class="col-12" x-show="availableActiveCycles.length === 0">
+                    <div class="alert alert-secondary text-center border-0 shadow-sm rounded-4">No active cycles are currently open for registration.</div>
+                </div>
+            </div>
+
+            <div x-show="activeCycle" id="capacityTableSection" class="mt-5 mx-auto" style="max-width: 750px;">
+                <h3 class="h6 fw-bold mb-2 text-dark"><i class="bi bi-graph-up-arrow me-2 text-primary"></i>Global Availability Status</h3>
+                <p class="text-muted mb-3" style="font-size: 0.75rem; line-height: 1.4;"><strong>Note:</strong> Availability reflects total organizational allocations. The 'My Referrals' tab on your dashboard only displays applications submitted under your specific employee profile authorization.</p>
+                
+                <div class="table-responsive card border-0 shadow-sm rounded-4 overflow-hidden mb-5">
+                    <table class="table table-hover align-middle mb-0 text-center" style="font-size: 0.85rem;">
+                        <thead class="table-light">
+                            <tr>
+                                <th class="text-start ps-4 text-muted fw-bold text-uppercase py-3" style="font-size: 0.72rem;">Department Name</th>
+                                <th class="text-muted fw-bold text-uppercase py-3" style="font-size: 0.72rem;">Max Program Seats</th>
+                                <th class="text-muted fw-bold text-uppercase py-3" style="font-size: 0.72rem;">Current Availability</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="dept in dmrcDepartments" :key="dept">
+                                <tr :class="(currentCycleCapacity[dept].max - currentCycleCapacity[dept].occ) <= 0 ? 'table-danger' : ''">
+                                    <td class="text-start ps-4 fw-bold text-dark" x-text="dept"></td>
+                                    <td class="fw-medium text-secondary" x-text="currentCycleCapacity[dept].max"></td>
+                                    <td>
+                                        <div class="d-flex align-items-center justify-content-center gap-2">
+                                            <span class="fw-bold" :class="(currentCycleCapacity[dept].max - currentCycleCapacity[dept].occ) <= 0 ? 'text-danger' : 'text-success'" x-text="Math.max(0, currentCycleCapacity[dept].max - currentCycleCapacity[dept].occ)"></span>
+                                            
+                                            <template x-if="(currentCycleCapacity[dept].max - currentCycleCapacity[dept].occ) < 0">
+                                                <span class="badge bg-danger" style="font-size: 0.65rem; padding: 4px 8px;" x-text="'Waitlist: ' + Math.abs(currentCycleCapacity[dept].max - currentCycleCapacity[dept].occ)"></span>
+                                            </template>
+                                            
+                                            <template x-if="(currentCycleCapacity[dept].max - currentCycleCapacity[dept].occ) === 0">
+                                                <span class="badge bg-warning text-dark" style="font-size: 0.65rem; padding: 4px 8px;">Waitlist</span>
+                                            </template>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="text-center">
+                    <!-- Informative Dynamic Alert -->
+                    <template x-if="activeCycle && !isWithinWindow(activeCycle)">
+                        <div class="alert alert-warning d-inline-block border-warning border-opacity-50 shadow-sm mb-4">
+                            <i class="bi bi-clock-history me-2"></i>
+                            <strong x-text="getCycleStatusMessage(activeCycle)"></strong>
+                        </div>
+                    </template>
+                    <div class="w-100"></div>
+                    
+                    <!-- Dynamic Disabled State -->
+                    <button type="button" class="btn btn-dmrc-primary btn-lg px-5 py-3 rounded-pill shadow fw-bold text-center" @click="beginWizard()" :disabled="!activeCycle || !isWithinWindow(activeCycle)">
+                        Begin Application <i class="bi bi-arrow-right ms-2"></i>
+                    </button>
+                </div>
+            </div>
+            </div>
+            </template>
+        </div>
+    </template>
+
+    <template x-if="portalState === 'form_wizard'">
+        <div>
+            <div x-show="showValidationWarning" class="position-fixed top-0 start-0 w-100 h-100" style="z-index: 1050; display: none;" x-transition.opacity>
+                <div class="w-100 h-100 bg-dark bg-opacity-50 d-flex align-items-center justify-content-center">
+                    <div class="card border-0 shadow-lg rounded-4 p-4 mx-3" style="max-width: 400px; width: 100%;" @click.outside="showValidationWarning = false">
+                        <div class="text-center mb-3">
+                            <div class="bg-warning bg-opacity-10 text-warning rounded-circle d-inline-flex align-items-center justify-content-center mb-3" style="width: 60px; height: 60px;"><i class="bi bi-exclamation-triangle-fill fs-2"></i></div>
+                            <h3 class="h5 fw-bold mb-2">Incomplete Fields Detected</h3>
+                            <p class="text-muted small mb-0">You have left some mandatory fields blank. You can skip them for now, but you will need to complete them before final submission.</p>
+                        </div>
+                        <div class="d-flex gap-2 w-100 mt-4">
+                            <button type="button" class="btn btn-outline-secondary w-50 fw-bold" @click="showValidationWarning = false">Stay & Fill</button>
+                            <button type="button" class="btn btn-warning w-50 fw-bold text-dark" @click="proceedToNextStep()">Skip & Next</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div x-show="showSubmitConfirm" class="position-fixed top-0 start-0 w-100 h-100" style="z-index: 1060; display: none;" x-transition.opacity>
+                <div class="w-100 h-100 bg-dark bg-opacity-50 d-flex align-items-center justify-content-center">
+                    <div class="card border-0 shadow-lg rounded-4 p-4 mx-3" style="max-width: 420px; width: 100%;" @click.outside="showSubmitConfirm = false">
+                        <div class="text-center mb-3">
+                            <div class="rounded-circle d-inline-flex align-items-center justify-content-center mb-3" style="width: 60px; height: 60px; background-color: var(--dmrc-blue-soft); color: var(--dmrc-blue);"><i class="bi bi-lock-fill fs-2"></i></div>
+                            <h3 class="h5 fw-bold mb-2">Confirm Final Submission</h3>
+                            <p class="text-muted small mb-0" x-text="placement.isInstitutionalMerge ? 'Saving returns this candidate to the College Referrals section as Ready for Merge. You can reopen this form to correct anything until they are marked as arrived.' : 'This will permanently lock the application record for HR verification. No further edits will be possible after submission.'"></p>
+                        </div>
+                        <div class="d-flex gap-2 w-100 mt-4">
+                            <button type="button" class="btn btn-outline-secondary w-50 fw-bold" @click="showSubmitConfirm = false">Go Back</button>
+                            <button type="button" class="btn btn-dmrc-primary w-50 fw-bold" @click="submitApplication()">Confirm &amp; Submit</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="container-xl pt-4 pb-2" x-transition>
+                <button type="button" class="btn btn-outline-secondary btn-sm fw-bold px-3 py-2 mb-2 d-inline-flex align-items-center gap-1 shadow-sm" @click="returnToDashboard()">
+                    <i class="bi bi-arrow-left"></i> Return to Dashboard
+                </button>
+                
+                <template x-if="placement.isInstitutionalMerge">
+                    <div class="alert bg-white border border-primary border-2 border-opacity-50 shadow-sm py-2 px-3 mt-3 d-inline-flex align-items-center gap-2 ms-3">
+                        <i class="bi bi-lightning-charge-fill text-warning fs-5"></i>
+                        <div>
+                            <span class="fw-bold text-dark text-uppercase" style="font-size: 0.8rem; letter-spacing: 0.05em;">College Referral &middot; <span x-text="applicationCode"></span></span>
+                            <span class="d-block text-muted" style="font-size: 0.7rem;">Capacity deduction bypassed. Data pre-filled from college draft.</span>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <nav class="bg-white border-bottom py-2 shadow-sm mb-4" x-transition>
+                <div class="container-xl">
+                    <div class="d-flex justify-content-between align-items-center overflow-x-auto flex-nowrap" style="gap: 1rem;">
+                        <template x-for="i in totalSteps">
+                            <button type="button" class="btn border-0 d-flex align-items-center gap-2 p-2 flex-shrink-0" @click="goToStep(i)" :disabled="i > highestStepReached" style="cursor: pointer; text-align: left; white-space: nowrap;">
+                                <span class="step-circle d-flex align-items-center justify-content-center fw-bold flex-shrink-0" :class="currentStep === i ? 'is-active' : (currentStep > i ? 'is-complete' : 'is-pending')">
+                                    <span x-show="currentStep <= i" x-text="i"></span><i x-show="currentStep > i" class="bi bi-check2"></i>
+                                </span>
+                                <div class="d-none d-sm-block" style="line-height: 1.1;">
+                                    <span class="d-block fw-bold small text-capitalize" :class="currentStep === i ? 'step-label-active' : 'text-dark'" x-text="i === 1 ? 'Details' : (i === 2 ? 'Academic' : (i === 3 ? 'Documents' : (i === 4 ? 'Internship Details' : 'Review')))"></span>
+                                    <span class="text-muted" style="font-size: 0.65rem;" x-text="i === 1 ? 'Bio Records' : (i === 2 ? 'Transcript' : (i === 3 ? 'Vault' : (i === 4 ? 'Parameters' : 'Submission')))"></span>
+                                </div>
+                            </button>
+                        </template>
+                    </div>
+                </div>
+            </nav>
+
+            <main class="container-xl pb-5">
+                <div class="row g-4">
+                    <div class="col-lg-8">
+                        
+                        <div x-show="isCorrectionMode" class="alert alert-danger border-danger shadow-sm rounded-4 mb-4" style="display: none;" x-transition>
+                             <div class="d-flex gap-3 align-items-start">
+                                 <i class="bi bi-exclamation-octagon-fill fs-3 text-danger"></i>
+                                 <div>
+                                    <h4 class="h6 fw-bold mb-1 text-danger">Action Required: Application Returned</h4>
+                                    <p class="mb-0 small fw-medium" style="color: #842029;" x-text="correctionRemarks"></p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="card border-0 shadow-sm p-4 rounded-4 bg-white">
+                            <div x-show="currentStep === 1" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Student Details</h2>
+                                    <p class="text-muted small">Enter the candidate's primary biographical parameters mapping strictly to your core database shape.</p>
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-2">
+                                        <label class="form-label">Title<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="student.salutation">
+                                            <option value="">Select</option>
+                                            <option value="Mr.">Mr.</option>
+                                            <!-- "Ms." rather than "Miss.": it is what the offer letter format
+                                                 prints, and the letter now takes this value directly. -->
+                                            <option value="Ms.">Ms.</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Full Name<span class="text-danger">*</span></label>
+                                        <input type="text" class="form-control text-uppercase" x-model="student.fullName" @input="student.fullName = $event.target.value.toUpperCase()" placeholder="As written on College ID card">
+                                    </div>
+                                    <div class="col-md-6"><label class="form-label">Father's Name<span class="text-danger">*</span></label><input type="text" class="form-control text-uppercase" x-model="student.fathersName" @input="student.fathersName = $event.target.value.toUpperCase()" placeholder="Father's complete name"></div>
+                                    <div class="col-md-4"><label class="form-label">Gender<span class="text-danger">*</span></label><select class="form-select" x-model="student.gender"><option value="">Select</option><option value="Male">Male</option><option value="Female">Female</option><option value="Other">Other</option></select></div>
+                                    <div class="col-md-4"><label class="form-label">Date of Birth<span class="text-danger">*</span></label><input type="text" class="form-control bg-white" x-model="student.dateOfBirth" readonly x-init="flatpickr($el, { maxDate: 'today', dateFormat: 'Y-m-d', altInput: true, altFormat: 'd-m-Y' })" placeholder="DD-MM-YYYY" style="cursor: pointer;"></div>
+                                    <div class="col-md-4"><label class="form-label">Mobile Number<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="student.mobile_number" @input="restrictMobileInput('mobile_number', 'f_email')" :class="isMobileInvalid('mobile_number') ? 'is-invalid' : ''" placeholder="10-digit mobile number"></div>
+                                    <div class="col-md-12"><label class="form-label">Email ID<span class="text-danger">*</span></label><input type="email" class="form-control" id="f_email" x-model="student.personal_email" :class="isEmailInvalid() ? 'is-invalid' : ''" placeholder="candidate@institution.edu"></div>
+                                    <div class="col-md-12"><label class="form-label">Permanent Address<span class="text-danger">*</span></label><textarea class="form-control text-uppercase" rows="2" x-model="student.permanent_address" @input="student.permanent_address = $event.target.value.toUpperCase()" placeholder="Complete resident layout space"></textarea></div>
+                                    <div class="divider-line"></div>
+                                    <h3 class="h6 fw-bold text-secondary mb-1">Emergency Contact Parameters</h3>
+                                    <div class="col-md-6"><label class="form-label">Emergency Contact Name<span class="text-danger">*</span></label><input type="text" class="form-control text-uppercase" x-model="student.emergency_contact_name" @input="student.emergency_contact_name = $event.target.value.toUpperCase()" placeholder="Contact person's full name"></div>
+                                    <div class="col-md-6"><label class="form-label">Emergency Contact Mobile<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="student.emergency_contact_mobile" @input="restrictMobileInput('emergency_contact_mobile', null)" :class="isMobileInvalid('emergency_contact_mobile') ? 'is-invalid' : ''" placeholder="10-digit mobile matrix"></div>
+                                </div>
+                            </div>
+                            <div x-show="currentStep === 2" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Academic &amp; Transcript Matrix</h2>
+                                    <p class="text-muted small">Input educational history matching child table specifications.</p>
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-12"><label class="form-label">University Name<span class="text-danger">*</span></label><input type="text" class="form-control text-uppercase" x-model="academic.university_name" @input="academic.university_name = $event.target.value.toUpperCase()" placeholder="Name of the governing University"></div>
+                                    <div class="col-md-12"><label class="form-label">College / Institute Name<span class="text-danger">*</span></label><input type="text" class="form-control text-uppercase" x-model="academic.college_name" @input="academic.college_name = $event.target.value.toUpperCase()" placeholder="Name of the specific college or campus"></div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Course (Degree)<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="academic.course"><option value="">Select Degree</option><template x-for="course in courseOptions"><option :value="course" x-text="course"></option></template><option value="Other">Other (Please Specify)</option></select>
+                                    </div>
+                                    <div class="col-md-6" x-show="academic.course === 'Other'" x-transition><label class="form-label">Specify Custom Degree<span class="text-danger">*</span></label><input type="text" class="form-control text-uppercase" x-model="academic.course_other" @input="academic.course_other = $event.target.value.toUpperCase()" placeholder="Enter degree name"></div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Branch / Specialization<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="academic.branch"><option value="">Select Branch</option><template x-for="branch in branchOptions"><option :value="branch" x-text="branch"></option></template><option value="Other">Other (Please Specify)</option></select>
+                                    </div>
+                                    <div class="col-md-6" x-show="academic.branch === 'Other'" x-transition><label class="form-label">Specify Custom Branch<span class="text-danger">*</span></label><input type="text" class="form-control text-uppercase" x-model="academic.branch_other" @input="academic.branch_other = $event.target.value.toUpperCase()" placeholder="Enter specialization name"></div>
+                                    <div class="divider-line"></div>
+                                    <h3 class="h6 fw-bold text-secondary mb-1">Current Academic Standing</h3>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Current Semester<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="academic.current_semester"><option value="">Select</option><template x-for="sem in 10"><option :value="sem" x-text="'Semester ' + sem"></option></template><option value="Graduated">Graduated / Alumni</option></select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label d-block">Grading System<span class="text-danger">*</span></label>
+                                        <div class="btn-group w-100" role="group">
+                                            <input type="radio" class="btn-check" name="btnradio" id="grade1" autocomplete="off" value="CGPA" x-model="academic.grading_system" @change="academic.current_score = ''">
+                                            <label class="btn btn-outline-primary" style="font-size: 0.85rem;" for="grade1">CGPA (10)</label>
+                                            <input type="radio" class="btn-check" name="btnradio" id="grade2" autocomplete="off" value="Percentage" x-model="academic.grading_system" @change="academic.current_score = ''">
+                                            <label class="btn btn-outline-primary" style="font-size: 0.85rem;" for="grade2">%</label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4"><label class="form-label">Current Score<span class="text-danger">*</span></label><input type="text" class="form-control" x-model="academic.current_score" @input="restrictScoreInput()" :placeholder="academic.grading_system === 'CGPA' ? 'Max 10.00' : 'Max 100.00'"></div>
+                                </div>
+                            </div>
+                            <div x-show="currentStep === 3" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Asset Management Vault</h2>
+                                    <p class="text-muted small">Upload mandatory compliance documents mapping to SYS-ADMIN rulesets. Max 2MB per file. You may upload these later before final submission.</p>
+                                </div>
+                                <div class="row g-4">
+                                    <!-- The Aadhaar NUMBER belongs to the Aadhaar document. If a
+                                         SYS-ADMIN disables that document, the number field, the upload
+                                         slot and the consent checkbox all disappear together, driven by
+                                         the same requiresConsent flag. -->
+                                    <div class="col-md-12 mb-2" x-show="requiresIdentityNumber" style="display: none;">
+                                        <label class="form-label">Aadhaar Number<span class="text-danger">*</span></label>
+                                        <input type="text" class="form-control w-50" x-model="student.aadhaar_number" @input="restrictAadhaarInput()" :class="isAadhaarInvalid() ? 'is-invalid' : ''" placeholder="12-digit Aadhaar Number">
+                                    </div>
+
+                                    <!-- DOCUMENT SLOTS
+                                         Rendered entirely from the configured rules. Each slot is keyed
+                                         by rule.key (doc_<doc_type_id>), so a document added or removed
+                                         in the admin dashboard appears or disappears here with no code
+                                         change, and renaming one is safe. -->
+                                    <template x-for="rule in activeDocumentRules" :key="rule.key">
+                                        <div class="col-md-6 mt-0">
+                                            <label class="form-label">
+                                                <span x-text="rule.name"></span>
+                                                <template x-if="rule.isMandatory"><span class="text-danger">*</span></template>
+                                                <template x-if="!rule.isMandatory"><span class="text-muted fw-normal ms-1" style="font-size: 0.72rem;">(optional)</span></template>
+                                            </label>
+                                            <div class="d-flex gap-2">
+                                                <input type="file" class="form-control"
+                                                       :accept="rule.format"
+                                                       @change="handleFileUpload($event, rule.key)">
+                                                <button type="button" class="btn btn-outline-primary px-3 flex-shrink-0"
+                                                        x-show="documents[rule.key]"
+                                                        @click="previewDocument(rule.key)"
+                                                        title="Preview Document"><i class="bi bi-eye-fill"></i></button>
+                                            </div>
+                                            <div class="d-flex justify-content-between align-items-center mt-1">
+                                                <div class="form-text mb-0" style="font-size: 0.72rem;">Max 2MB &bull; <strong class="text-dark" x-text="rule.format"></strong></div>
+                                                <span x-show="documents[rule.key]" class="badge bg-success bg-opacity-10 text-success" style="font-size: 0.68rem;">
+                                                    <i class="bi bi-file-earmark-check-fill me-1"></i>Current: <span x-text="documents[rule.key] ? documents[rule.key].name : ''"></span>
+                                                </span>
+                                            </div>
+
+                                            <!-- Consent follows the document, via rule.requiresConsent.
+                                                 Disabling the document removes the checkbox with it, and a
+                                                 future sensitive document needs configuration, not code. -->
+                                            <template x-if="rule.requiresConsent">
+                                                <div x-show="documents[rule.key]" x-transition.opacity style="display: none;" class="mt-2 p-2 rounded border bg-light">
+                                                    <div class="form-check d-flex gap-2 mb-0">
+                                                        <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" id="aadhaarConsentCheck" x-model="aadhaarConsent">
+                                                        <label class="form-check-label text-muted" for="aadhaarConsentCheck" style="font-size: 0.72rem;">
+                                                            I hereby give my consent to Delhi Metro Rail Corporation (DMRC) to use my Aadhaar Number/Virtual ID solely for the purpose of identity verification.
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                            <div x-show="currentStep === 4" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Internship Details</h2>
+                                    <p class="text-muted small">Define placement parameters mapping to operational capacities.</p>
+                                </div>
+                                <div class="row g-4 mb-4">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Target Department<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="placement.department_id">
+                                            <option value="">Select Department</option>
+                                            <template x-for="dept in dmrcDepartments"><option :value="dept" x-text="dept"></option></template>
+                                        </select>
+                                        
+                                        <div x-show="placement.department_id && selectedDeptCapacity && !placement.isInstitutionalMerge" x-transition.opacity style="display: none;" class="mt-2 p-2 rounded-3 border" :class="isWaitlisted ? 'bg-danger bg-opacity-10 border-danger border-opacity-25' : 'bg-light border-secondary border-opacity-10'">
+                                            <div class="d-flex justify-content-between align-items-center" style="font-size: 0.75rem;">
+                                                <span class="text-muted fw-bold">Max Seats: <span class="text-dark" x-text="selectedDeptCapacity?.max"></span></span>
+                                                <div class="fw-bold d-flex align-items-center gap-1" :class="isWaitlisted ? 'text-danger' : 'text-success'">
+                                                    <span>Availability:</span>
+                                                    <span x-text="Math.max(0, selectedDeptCapacity?.max - selectedDeptCapacity?.occ)"></span>
+                                                    <template x-if="selectedDeptCapacity && (selectedDeptCapacity.max - selectedDeptCapacity.occ) < 0">
+                                                        <span class="badge bg-danger ms-1" style="font-size: 0.6rem; padding: 3px 6px;" x-text="'Waitlist: ' + Math.abs(selectedDeptCapacity.max - selectedDeptCapacity.occ)"></span>
+                                                    </template>
+                                                    <template x-if="selectedDeptCapacity && (selectedDeptCapacity.max - selectedDeptCapacity.occ) === 0">
+                                                        <span class="badge bg-warning text-dark ms-1" style="font-size: 0.6rem; padding: 3px 6px;">Waitlist</span>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div x-show="placement.isInstitutionalMerge" style="display: none;" class="mt-2 text-primary fw-bold" style="font-size: 0.75rem;">
+                                            <i class="bi bi-shield-check me-1"></i> Capacity pre-reserved via Draft.
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Internship Duration<span class="text-danger">*</span></label>
+                                        <select class="form-select" x-model="placement.duration_weeks">
+                                            <option value="">Select Duration</option><option value="4">4 Weeks (1 Month)</option><option value="6">6 Weeks (1.5 Months)</option><option value="8">8 Weeks (2 Months)</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label" x-text="placement.isInstitutionalMerge ? 'Allotted Date of Joining' : 'Preferred Date of Joining'"><span class="text-danger">*</span></label>
+                                        <!-- Both modes get a calendar. An employee referrer is
+                                             restricted to the cycle's published dates; a college
+                                             referral highlights them but permits any date, since
+                                             DMRC has already committed to one with the institution
+                                             and it may not sit on the published list. -->
+                                        <input type="text" class="form-control bg-white" x-model="placement.requested_doj" readonly x-init="initDOJCalendar($el)" placeholder="Select date" style="cursor: pointer;">
+                                        <div x-show="placement.isInstitutionalMerge" style="display:none;" class="form-text small text-muted mt-1">
+                                            Approved cycle dates are highlighted. Any other date may be chosen if the candidate was given one. Changing this replaces the date allotted earlier.
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card border-0 rounded-4 overflow-hidden mt-2" :class="placement.isInstitutionalMerge ? 'bg-primary bg-opacity-10 border-primary border-opacity-25 border' : 'bg-light'">
+                                    <div class="p-3 border-bottom d-flex align-items-center gap-2" :class="placement.isInstitutionalMerge ? 'bg-primary text-white border-primary' : 'bg-secondary bg-opacity-10 border-secondary border-opacity-10'">
+                                        <i class="bi bi-shield-lock-fill" :class="placement.isInstitutionalMerge ? 'text-white' : 'text-secondary'"></i>
+                                        <span class="fw-bold" :class="placement.isInstitutionalMerge ? 'text-white' : 'text-dark'" style="font-size: 0.85rem;" x-text="placement.isInstitutionalMerge ? 'Institutional Authorization' : 'Internal Referrer Authorization'"></span>
+                                    </div>
+                                    <div class="p-4">
+                                        <div class="row g-3">
+                                            <div class="col-md-3"><label class="form-label text-muted" x-text="placement.isInstitutionalMerge ? 'Referrer ID' : 'Employee ID'"></label><input type="text" class="form-control text-muted fw-medium" :class="placement.isInstitutionalMerge ? 'bg-white border-primary border-opacity-25' : 'bg-white'" :value="placement.isInstitutionalMerge ? 'INSTITUTIONAL' : sessionEmployee.empId" disabled readonly></div>
+                                            <div class="col-md-3"><label class="form-label text-muted" x-text="placement.isInstitutionalMerge ? 'Institution Name' : 'Referrer Name'"></label><input type="text" class="form-control text-muted fw-medium text-uppercase" :class="placement.isInstitutionalMerge ? 'bg-white border-primary border-opacity-25' : 'bg-white'" :value="placement.isInstitutionalMerge ? student.college_name || 'COLLEGE REFERRAL' : sessionEmployee.name" disabled readonly></div>
+                                            <div class="col-md-3"><label class="form-label text-muted">Designation</label><input type="text" class="form-control text-muted fw-medium text-uppercase" :class="placement.isInstitutionalMerge ? 'bg-white border-primary border-opacity-25' : 'bg-white'" :value="placement.isInstitutionalMerge ? 'COLLEGE REFERRAL' : sessionEmployee.designation" disabled readonly></div>
+                                            <div class="col-md-3"><label class="form-label text-muted" x-text="placement.isInstitutionalMerge ? 'Channel' : 'Department'"></label><input type="text" class="form-control text-muted fw-medium text-uppercase" :class="placement.isInstitutionalMerge ? 'bg-white border-primary border-opacity-25' : 'bg-white'" :value="placement.isInstitutionalMerge ? 'EXTERNAL DIRECT' : sessionEmployee.department" disabled readonly></div>
+                                            
+                                            <div class="col-md-12 mt-3" x-show="!placement.isInstitutionalMerge">
+                                                <label class="form-label text-dark fw-bold small">Referrer Official Email ID <span class="text-danger">*</span></label>
+                                                <input type="email" class="form-control bg-white fw-medium" placeholder="employee@dmrc.org" x-model="placement.referrer_email" :class="isReferrerEmailInvalid() ? 'is-invalid' : ''">
+                                                <div class="form-text text-muted" style="font-size: 0.75rem;">Automated status updates and clearance notifications will be sent to this address.</div>
+                                            </div>
+
+                                            <div class="col-12 mt-4" x-show="!placement.isInstitutionalMerge">
+                                                <div class="form-check form-switch p-3 rounded-3 border bg-white d-flex align-items-center gap-3" :class="placement.is_ward ? 'border-primary bg-primary bg-opacity-10' : 'border-light'">
+                                                    <input class="form-check-input m-0" type="checkbox" role="switch" id="wardCheck" x-model="placement.is_ward" style="width: 2.5em; height: 1.25em; cursor: pointer;">
+                                                    <label class="form-check-label fw-medium w-100 mt-1" for="wardCheck" style="cursor: pointer; font-size: 0.9rem;">Applicant is my direct ward/child</label>
+                                                </div>
+                                                <div class="form-text mt-2 text-muted" style="font-size: 0.75rem;">
+                                                    * The children of DMRC employees, who are willing to pursue internship, shall be over and above the total ceiling limit.
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div x-show="currentStep === 5" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 transform translate-x-4">
+                                <div class="mb-4">
+                                    <h2 class="h5 fw-bold mb-1">Review &amp; Final Lock Submission</h2>
+                                    <p class="text-muted small">Verify every section, accept the declarations, and lock the application for HR verification.</p>
+                                </div>
+                                <div x-show="!isReadyToSubmit" x-transition.opacity class="rounded-4 p-3 mb-4" style="background-color: #FDECEE; border: 1px solid rgba(201, 20, 44, 0.25); color: var(--dmrc-crimson);">
+                                    <div class="d-flex align-items-center gap-2 fw-bold mb-2" style="font-size: 0.88rem;"><i class="bi bi-x-octagon-fill"></i> Submission blocked — mandatory items are missing</div>
+                                    <template x-for="group in missingByStep" :key="group.step">
+                                        <div class="mb-2">
+                                            <div class="fw-bold text-uppercase" style="font-size: 0.68rem; letter-spacing: 0.04em; opacity: 0.8;" x-text="'Step ' + group.step + ' · ' + group.title"></div>
+                                            <div class="d-flex flex-wrap gap-2 mt-1">
+                                                <template x-for="item in group.items" :key="item"><button type="button" class="missing-link" @click="goToStep(group.step)" x-text="item"></button></template>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <span class="text-muted fw-medium" style="font-size: 0.78rem;"><i class="bi bi-list-check me-1"></i>Review all 4 sections below.</span>
+                                    <button type="button" class="btn btn-link p-0 fw-bold text-decoration-none" style="font-size: 0.78rem; color: var(--dmrc-blue);" @click="setAllSections(!allSectionsOpen)" x-text="allSectionsOpen ? 'Collapse All' : 'Expand All'"></button>
+                                </div>
+                                
+                                <div class="review-accordion mb-2">
+                                    <button type="button" class="review-head" @click="toggleSection(1)"><span class="rev-badge">1</span><span class="fw-bold">Student Details</span><span class="chip ms-auto" :class="isSectionComplete(1) ? 'chip-complete' : 'chip-incomplete'" x-text="isSectionComplete(1) ? 'Complete' : 'Incomplete'"></span><i class="bi bi-chevron-down rev-chevron" :class="reviewSections[1] ? 'open' : ''"></i></button>
+                                    <div class="review-body" x-show="reviewSections[1]" x-transition.opacity.duration.150ms>
+                                        <div class="rev-row"><span class="rev-label">Full Name</span><span class="rev-value text-uppercase" x-text="student.salutation ? displayValue(student.salutation + ' ' + student.fullName) : displayValue(student.fullName)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Father's Name</span><span class="rev-value text-uppercase" x-text="displayValue(student.fathersName)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Gender</span><span class="rev-value" x-text="displayValue(student.gender)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Date of Birth</span><span class="rev-value" x-text="displayDate(student.dateOfBirth)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Mobile Number</span><span class="rev-value" x-text="displayValue(student.mobile_number)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Email ID</span><span class="rev-value" x-text="displayValue(student.personal_email)"></span></div>
+                                    </div>
+                                </div>
+                                <div class="review-accordion mb-2">
+                                    <button type="button" class="review-head" @click="toggleSection(2)"><span class="rev-badge">2</span><span class="fw-bold">Academic Matrix</span><span class="chip ms-auto" :class="isSectionComplete(2) ? 'chip-complete' : 'chip-incomplete'" x-text="isSectionComplete(2) ? 'Complete' : 'Incomplete'"></span><i class="bi bi-chevron-down rev-chevron" :class="reviewSections[2] ? 'open' : ''"></i></button>
+                                    <div class="review-body" x-show="reviewSections[2]" x-transition.opacity.duration.150ms>
+                                        <div class="rev-row"><span class="rev-label">University</span><span class="rev-value text-uppercase" x-text="displayValue(academic.university_name)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">College</span><span class="rev-value text-uppercase" x-text="displayValue(academic.college_name)"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Course</span><span class="rev-value text-uppercase" x-text="displayValue(displayCourse())"></span></div>
+                                        <div class="rev-row"><span class="rev-label">Score</span><span class="rev-value" x-text="displayValue(displayScore())"></span></div>
+                                    </div>
+                                </div>
+                                <div class="review-accordion mb-2">
+                                    <button type="button" class="review-head" @click="toggleSection(3)"><span class="rev-badge">3</span><span class="fw-bold">Document Vault</span><span class="chip ms-auto" :class="isSectionComplete(3) ? 'chip-complete' : 'chip-incomplete'" x-text="getUploadedCount() + '/' + getRequiredCount() + ' Uploaded'"></span><i class="bi bi-chevron-down rev-chevron" :class="reviewSections[3] ? 'open' : ''"></i></button>
+                                    <div class="review-body" x-show="reviewSections[3]" x-transition.opacity.duration.150ms>
+                                        <div class="rev-row" x-show="requiresIdentityNumber"><span class="rev-label">Aadhaar Number</span><span class="rev-value" x-text="displayValue(student.aadhaar_number)"></span></div>
+                                        <template x-for="rule in activeDocumentRules" :key="rule.key">
+                                            <div class="rev-row">
+                                                <span class="rev-label" x-text="rule.name"></span>
+                                                <span class="rev-value">
+                                                    <template x-if="documents[rule.key]">
+                                                        <span class="d-inline-flex align-items-center gap-2"><i class="bi bi-file-earmark-check-fill" style="color: var(--dmrc-emerald);"></i><span class="text-truncate" style="max-width: 200px;" x-text="documents[rule.key].name"></span><button type="button" class="btn-eye" @click="previewDocument(rule.key)"><i class="bi bi-eye-fill"></i></button></span>
+                                                    </template>
+                                                    <template x-if="!documents[rule.key] && rule.isMandatory"><span class="chip chip-incomplete">Missing</span></template>
+                                                    <template x-if="!documents[rule.key] && !rule.isMandatory"><span class="chip" style="background-color:#F1F5F9;color:#64748B;">Not provided (optional)</span></template>
+                                                </span>
+                                            </div>
+                                        </template>
+                                        <template x-if="requiresIdentityNumber">
+                                            <div class="rev-row mt-2 rounded" style="background-color: #F8FAFC; padding: 8px 12px; border: 1px solid #E2E8F0;">
+                                                <span class="rev-label text-success" style="font-size: 0.75rem;"><i class="bi bi-shield-check me-1"></i>Aadhaar Consent</span><span class="rev-value text-success" style="font-size: 0.75rem;">Provided</span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                                <div class="review-accordion mb-2">
+                                    <button type="button" class="review-head" @click="toggleSection(4)"><span class="rev-badge">4</span><span class="fw-bold">Internship Details</span><span class="chip ms-auto" :class="isSectionComplete(4) ? 'chip-complete' : 'chip-incomplete'" x-text="isSectionComplete(4) ? 'Complete' : 'Incomplete'"></span><i class="bi bi-chevron-down rev-chevron" :class="reviewSections[4] ? 'open' : ''"></i></button>
+                                    <div class="review-body" x-show="reviewSections[4]" x-transition.opacity.duration.150ms>
+                                        <div class="rev-row"><span class="rev-label">Target Dept</span><span class="rev-value" x-text="displayValue(placement.department_id)"></span></div>
+                                        <div class="rev-row"><span class="rev-label" x-text="placement.isInstitutionalMerge ? 'Allotted DOJ' : 'Requested DOJ'"></span><span class="rev-value" x-text="displayDate(placement.requested_doj)"></span></div>
+                                        
+                                        <div class="rev-row" x-show="!placement.isInstitutionalMerge">
+                                            <span class="rev-label">Referrer Email</span>
+                                            <span class="rev-value" x-text="displayValue(placement.referrer_email)"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="card bg-light border-0 rounded-4 overflow-hidden mt-4" :class="!isReadyToSubmit ? 'decl-locked' : ''">
+                                    <div class="p-3 bg-secondary bg-opacity-10 border-bottom border-secondary border-opacity-10 d-flex align-items-center gap-2"><i class="bi bi-shield-fill-check text-secondary"></i><span class="fw-bold text-dark" style="font-size: 0.85rem;">Final Declarations</span></div>
+                                    <div class="p-4">
+                                        <p class="fw-bold mb-3" style="font-size: 0.85rem;">By submitting this application, I formally declare:</p>
+                                        <ul class="mb-4 ps-3 d-flex flex-column gap-2" style="font-size: 0.82rem; line-height: 1.5;">
+                                            <li><strong>Information Accuracy:</strong> All information, academic data, and uploaded documents provided in this referral application are true, complete, and accurate to the best of my knowledge.</li>
+                                            <li><strong>Bonafide Status:</strong> The applicant is a bonafide student currently enrolled in the declared academic institution and program.</li>
+                                            <li><strong>Exclusivity:</strong> The applicant is not currently employed, nor engaged in any other full-time internship or professional training assignment that would conflict with this program.</li>
+                                            <li><strong>Compliance:</strong> I understand and will ensure the applicant strictly adheres to all standard operating procedures, safety guidelines, and the code of conduct as outlined in the <a href="https://www.delhimetrorail.com" target="_blank" rel="noopener" class="fw-bold" style="color: var(--dmrc-blue);">Official DMRC Policies &amp; Rules</a>.</li>
+                                        </ul>
+                                        <div class="form-check p-3 rounded-3 border bg-white d-flex align-items-center gap-2" :class="acceptedDeclarations ? 'border-primary bg-primary bg-opacity-10' : 'border-light'">
+                                            <input class="form-check-input ms-0 mt-0" type="checkbox" id="declCheck" x-model="acceptedDeclarations" :disabled="!isReadyToSubmit" style="width: 1.25em; height: 1.25em; cursor: pointer;">
+                                            <label class="form-check-label fw-medium w-100" for="declCheck" style="cursor: pointer; font-size: 0.9rem;">I have read and agree to all declarations.</label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="card border-0 shadow-sm p-3 mt-3 rounded-4 bg-white d-flex flex-row align-items-center justify-content-between">
+                            <button type="button" class="btn btn-outline-secondary px-4 py-2" style="font-size: 0.88rem; font-weight: 600;" @click="prevStep()" x-show="currentStep > 1"><i class="bi bi-arrow-left me-2"></i> Save & Back</button>
+                            <div x-show="currentStep === 1"></div>
+                            <button type="button" class="btn btn-primary px-4 py-2 ms-auto" style="font-size: 0.88rem; font-weight: 600; background-color: var(--dmrc-blue); border-color: var(--dmrc-blue);" @click="nextStep()" x-show="currentStep < totalSteps">Save & Next <i class="bi bi-arrow-right ms-2"></i></button>
+                            <button type="button" class="btn btn-dmrc-primary px-4 py-2 ms-auto" style="font-size: 0.88rem; font-weight: 600;" x-show="currentStep === totalSteps" :disabled="!canSubmit" @click="requestSubmit()"><i class="bi bi-lock-fill me-2"></i> Submit Application</button>
+                        </div>
+                    </div>
+
+                    <!-- Right Column Ticket -->
+                    <div class="col-lg-4">
+                        <div class="sticky-top" style="top: 20px; z-index: 10;">
+                            <div class="card border-0 rounded-4 overflow-hidden shadow" style="box-shadow: var(--shadow-ticket) !important;">
+                                <div class="p-3 text-white" style="background: linear-gradient(135deg, var(--dmrc-blue), var(--dmrc-blue-dark));">
+                                    <div class="text-uppercase tracking-wider fw-medium" style="font-size: 0.65rem; letter-spacing: 0.08em; opacity: 0.85;">Operational Ticket Record</div>
+                                    <div class="fw-bold mt-1" style="font-family: var(--font-display); font-size: 1rem;" x-text="applicationCode"></div>
+                                </div>
+                                <div class="bg-white px-3 pt-3 pb-2 border-top border-4 border-light">
+                                    <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.82rem;"><span class="text-muted">Target Cycle</span><span class="fw-bold text-dark text-end" x-text="activeCycle ? activeCycle.name : '—'"></span></div>
+                                    <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.82rem;"><span class="text-muted">Candidate</span><span class="fw-bold text-dark text-end text-uppercase" x-text="student.fullName || '—'"></span></div>
+                                    <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.82rem;"><span class="text-muted">Target Dept.</span><span class="fw-bold text-dark text-end" x-text="placement.department_id || '—'"></span></div>
+                                    <div class="d-flex justify-content-between border-bottom pb-2 mb-2" style="font-size: 0.82rem;"><span class="text-muted">Vault Status</span><span class="fw-bold text-dark text-end" :class="getUploadedCount() === getRequiredCount() ? 'text-success' : 'text-warning'" x-text="getUploadedCount() + '/' + getRequiredCount() + ' Uploaded'"></span></div>
+                                    <div class="text-center py-2 my-2 rounded-pill fw-bold" style="font-size: 0.72rem; background-color: var(--dmrc-blue-soft); color: var(--dmrc-blue);">RECORD STATUS: TRANSACTION DRAFT</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </template>
+
+    <template x-if="portalState === 'submitted'">
+        <div class="container-xl py-5 my-4 d-flex justify-content-center" x-transition>
+            <div class="card border-0 shadow-lg rounded-4 p-5 text-center" style="max-width: 560px; width: 100%;">
+                <div class="success-check mx-auto mb-4"><i class="bi bi-check-lg"></i></div>
+                <h1 class="h3 fw-bold mb-2" style="font-family: var(--font-display);" x-text="placement.isInstitutionalMerge ? 'Application Complete' : 'Thank You!'"></h1>
+                <!-- Accurate for a college referral: the record is NOT yet in the
+                     main pipeline. It joins it only when the candidate actually
+                     reports and HR marks them as arrived. -->
+                <p class="text-muted mb-4" x-text="placement.isInstitutionalMerge ? 'The candidate\'s details and documents are recorded. Return to the HR dashboard and mark them as arrived when they report — that is what moves the application into the main pipeline.' : 'The referral application has been submitted successfully and is now locked for HR verification.'"></p>
+                <div class="rounded-4 p-3 mb-3" style="background-color: var(--dmrc-blue-soft);">
+                    <div class="text-uppercase fw-medium" style="font-size: 0.65rem; letter-spacing: 0.08em; color: var(--dmrc-blue); opacity: 0.85;">Application Ticket ID</div>
+                    <div class="fw-bold mt-1" style="font-family: var(--font-display); font-size: 1.45rem; color: var(--dmrc-blue); letter-spacing: 0.02em;" x-text="finalTicket"></div>
+                </div>
+                <div class="d-flex justify-content-center mb-4">
+                    <span class="status-pill d-inline-flex align-items-center gap-2"><i class="bi bi-hourglass-split"></i> <span x-text="placement.isInstitutionalMerge ? 'Status: Ready for Merge · Awaiting Arrival' : 'Status: Submitted · Approval Pending'"></span></span>
+                </div>
+                <button type="button" class="btn btn-dmrc-primary btn-lg px-5 py-3 rounded-pill shadow fw-bold mx-auto" @click="returnToDashboard()">
+                    <i class="bi bi-grid-fill me-2"></i> <span x-text="placement.isInstitutionalMerge ? 'Close & Return to HR Dashboard' : 'Return to Dashboard'"></span>
+                </button>
+            </div>
+        </div>
+    </template>
+
+    <div class="offcanvas offcanvas-end shadow" tabindex="-1" id="ticketDrawer" style="width: 500px; max-width: 100vw; border-left: 0;">
+        <div class="offcanvas-header bg-light border-bottom p-4">
+            <div>
+                <h5 class="offcanvas-title fw-bold text-uppercase" style="font-family: var(--font-display);" x-text="selectedDrawerApp ? (selectedDrawerApp.student.salutation ? selectedDrawerApp.student.salutation + ' ' + selectedDrawerApp.student.fullName : selectedDrawerApp.student.fullName || 'Draft Candidate') : ''"></h5>
+                <div class="text-muted small mt-1" style="font-family: var(--font-display); color: var(--dmrc-blue) !important; font-weight: 700;" x-text="selectedDrawerApp ? selectedDrawerApp.ticketId : ''"></div>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+        </div>
+        <div class="offcanvas-body p-0 bg-white">
+            <template x-if="selectedDrawerApp">
+                <div class="d-flex flex-column h-100">
+                    <div class="flex-grow-1">
+                        <div class="p-4 border-bottom d-flex align-items-center justify-content-between" style="background-color: #F8FAFC;">
+                            <span class="text-muted fw-bold" style="font-size: 0.75rem; text-transform: uppercase;">Current Status</span>
+                            <div class="text-end">
+                                <span class="badge" :class="selectedDrawerApp.badge" style="padding: 6px 12px; font-size: 0.8rem;" x-text="selectedDrawerApp.dbStatus || selectedDrawerApp.status"></span>
+                                <template x-if="selectedDrawerApp.timeline && selectedDrawerApp.timeline.some(e => e.title.includes('Resubmitted'))">
+                                    <div class="mt-1">
+                                        <span class="badge bg-secondary bg-opacity-10 text-secondary border border-secondary border-opacity-25" style="font-size: 0.65rem;">
+                                            <i class="bi bi-arrow-repeat me-1"></i>Resubmitted
+                                        </span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <template x-if="selectedDrawerApp.timeline && selectedDrawerApp.timeline.length > 0">
+                            <div class="p-4 border-bottom">
+                                <h6 class="fw-bold mb-3" style="font-size: 0.85rem; color: var(--dmrc-blue);"><i class="bi bi-clock-history me-2"></i>Status Timeline</h6>
+                                <div class="drawer-timeline mt-3">
+                                    <template x-for="event in selectedDrawerApp.timeline" :key="event.title + event.date">
+                                        <div class="drawer-timeline-item">
+                                            <div class="drawer-timeline-date" x-text="event.date"></div>
+                                            <div class="drawer-timeline-title" x-text="event.title"></div>
+                                            <div class="drawer-timeline-desc" x-show="event.desc" x-text="event.desc"></div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+
+                        <div class="p-4 pb-5">
+                            <h6 class="fw-bold mb-3" style="font-size: 0.85rem; color: var(--dmrc-blue);"><i class="bi bi-file-text me-2"></i>Application Data</h6>
+                            
+                            <div class="review-accordion mb-2">
+                                <button type="button" class="review-head"><span class="fw-bold">Student Details</span></button>
+                                <div class="review-body">
+                                    <div class="rev-row"><span class="rev-label">Full Name</span><span class="rev-value text-uppercase" x-text="selectedDrawerApp.student.salutation ? displayValue(selectedDrawerApp.student.salutation + ' ' + selectedDrawerApp.student.fullName) : displayValue(selectedDrawerApp.student.fullName)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Father's Name</span><span class="rev-value text-uppercase" x-text="displayValue(selectedDrawerApp.student.fathersName)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Gender</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.student.gender)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">DOB</span><span class="rev-value" x-text="displayDate(selectedDrawerApp.student.dateOfBirth)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Email ID</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.student.personal_email)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Mobile Number</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.student.mobile_number)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Address</span><span class="rev-value text-uppercase" x-text="displayValue(selectedDrawerApp.student.permanent_address)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Emerg. Contact</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.student.emergency_contact_name) + ' (' + displayValue(selectedDrawerApp.student.emergency_contact_mobile) + ')'"></span></div>
+                                </div>
+                            </div>
+                            
+                            <div class="review-accordion mb-2">
+                                <button type="button" class="review-head"><span class="fw-bold">Academic Matrix</span></button>
+                                <div class="review-body">
+                                    <div class="rev-row"><span class="rev-label">University</span><span class="rev-value text-uppercase" x-text="displayValue(selectedDrawerApp.academic.university_name)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">College</span><span class="rev-value text-uppercase" x-text="displayValue(selectedDrawerApp.academic.college_name)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Course</span><span class="rev-value text-uppercase" x-text="displayCourse(selectedDrawerApp.academic)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Branch</span><span class="rev-value text-uppercase" x-text="displayBranch(selectedDrawerApp.academic)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Semester</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.academic.current_semester)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Score</span><span class="rev-value" x-text="displayScore(selectedDrawerApp.academic)"></span></div>
+                                </div>
+                            </div>
+
+                            <div class="review-accordion mb-2">
+                                <button type="button" class="review-head"><span class="fw-bold">Document Vault</span><span class="chip chip-complete ms-auto" x-text="getDrawerUploadedCount() + '/' + getRequiredCount()"></span></button>
+                                <div class="review-body">
+                                    <div class="rev-row" x-show="requiresIdentityNumber"><span class="rev-label">Aadhaar Number</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.student.aadhaar_number)"></span></div>
+                                    <!-- Loops over THIS application's own rules, so it shows exactly
+                                         what was asked for at the time it was submitted. -->
+                                    <template x-for="rule in (selectedDrawerApp.documentRules || [])" :key="rule.key">
+                                        <div class="rev-row">
+                                            <span class="rev-label" x-text="rule.name"></span>
+                                            <span class="rev-value">
+                                                <template x-if="!selectedDrawerApp.documents[rule.key] && !rule.isMandatory">
+                                                    <span class="chip" style="background-color:#F1F5F9;color:#64748B;">Not provided (optional)</span>
+                                                </template>
+                                                <template x-if="!selectedDrawerApp.documents[rule.key] && rule.isMandatory">
+                                                    <span class="chip chip-incomplete">Missing</span>
+                                                </template>
+                                                <template x-if="selectedDrawerApp.documents[rule.key]">
+                                                    <span class="d-inline-flex align-items-center gap-2"><i class="bi bi-file-earmark-check-fill" style="color: var(--dmrc-emerald);"></i><span class="text-truncate" style="max-width: 150px;" x-text="selectedDrawerApp.documents[rule.key].name"></span><button type="button" class="btn-eye" @click="previewDrawerDocument(selectedDrawerApp.documents[rule.key])"><i class="bi bi-eye-fill"></i></button></span>
+                                                </template>
+                                            </span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <div class="review-accordion mb-2">
+                                <button type="button" class="review-head"><span class="fw-bold">Internship Details</span></button>
+                                <div class="review-body">
+                                    <div class="rev-row"><span class="rev-label">Target Dept</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.dept)"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Duration</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.duration)"></span></div>
+                                    <div class="rev-row"><span class="rev-label" x-text="getDisplayDojLabel(selectedDrawerApp.status)"></span><span class="rev-value" x-text="displayDate(getDisplayDojValue(selectedDrawerApp))"></span></div>
+                                    <div class="rev-row"><span class="rev-label">Ward Status</span><span class="rev-value" x-text="selectedDrawerApp.isWard ? 'Yes (DMRC Ward)' : 'No'"></span></div>
+                                    <div class="rev-row" x-show="selectedDrawerApp.referrer_email"><span class="rev-label">Referrer Email</span><span class="rev-value" x-text="displayValue(selectedDrawerApp.referrer_email)"></span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="p-4 border-top bg-light" x-show="canWithdraw(selectedDrawerApp)">
+                        <button class="btn btn-outline-danger w-100 fw-bold bg-white" @click="confirmWithdraw(selectedDrawerApp)">
+                            <i class="bi bi-x-octagon-fill me-2"></i> Withdraw Application
+                        </button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <div x-show="showWithdrawConfirm" class="position-fixed top-0 start-0 w-100 h-100" style="z-index: 1060; display: none;" x-transition.opacity>
+        <div class="w-100 h-100 bg-dark bg-opacity-50 d-flex align-items-center justify-content-center">
+            <div class="card border-0 shadow-lg rounded-4 p-4 mx-3" style="max-width: 420px; width: 100%;" @click.outside="showWithdrawConfirm = false">
+                <div class="text-center mb-3">
+                    <div class="rounded-circle d-inline-flex align-items-center justify-content-center mb-3 bg-danger bg-opacity-10 text-danger" style="width: 60px; height: 60px;"><i class="bi bi-exclamation-triangle-fill fs-2"></i></div>
+                    <h3 class="h5 fw-bold mb-2">Confirm Withdrawal</h3>
+                    <p class="text-muted small mb-0">Are you absolutely sure you want to withdraw this application? This action is irreversible, the seat will be refunded, and the record will be permanently marked as Rejected.</p>
+                </div>
+                <div class="d-flex gap-2 w-100 mt-4">
+                    <button type="button" class="btn btn-outline-secondary w-50 fw-bold" @click="showWithdrawConfirm = false">Cancel</button>
+                    <button type="button" class="btn btn-danger w-50 fw-bold" @click="executeWithdraw()">Confirm Withdraw</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
