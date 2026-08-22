@@ -1,4 +1,5 @@
 import json
+import re
 import logging
 from types import SimpleNamespace
 import io
@@ -16,6 +17,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction, IntegrityError
+# Q for the archive's search and either-date filters; F for ordering that keeps
+# blank dates at the bottom whichever way a column is sorted.
+from django.db.models import Q, F
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape, letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -46,7 +50,8 @@ from .models import (
     Users, Roles, Employees, SystemAuditLogs, ApplicationDrafts,
     ApplicationDocumentRequirements, ArchivedApplications, Notifications,
     ArchivedAcademicDetails, ArchivedDocuments,
-    ArchivedStatusHistory, ArchivedDocumentRequirements
+    ArchivedStatusHistory, ArchivedDocumentRequirements,
+    ArchivedCycleJoiningDates
 )
 
 # --- Universal Helpers ---
@@ -257,6 +262,36 @@ def department_occupancy(cycle):
 def document_slug(doc_type_id):
     """Stable key used by the front ends for one document slot."""
     return f"doc_{doc_type_id}"
+
+
+def document_slug_for_name(type_name):
+    """Fallback key for a document slot whose type id is unknown.
+
+    Used only by the archive, and only for rows that predate doc_type_id being
+    carried into archived_documents -- or whose type was deleted from the
+    catalogue before the id could be recorded. Derived from the NAME, so a
+    requirement and the file that satisfied it still produce the same key and
+    still pair up in the drawer.
+
+    Never used for live documents: those always have a type id.
+    """
+    cleaned = re.sub(r'[^a-z0-9]+', '_', (type_name or '').strip().lower())
+    return f"docname_{cleaned.strip('_')}"
+
+
+# How many rows are sent to the database per INSERT when archiving.
+#
+# Archiving used to insert one row at a time. At DMRC's volumes -- 500 to 2,000
+# applications, each carrying documents, requirements and a timeline -- that is
+# tens of thousands of statements inside a single transaction, and TiDB caps
+# both the statement count and the total size of one. A full-size cycle could
+# fail outright, and even where it succeeded the round trips alone could outlast
+# the web server's timeout.
+#
+# 500 is deliberately conservative: large enough that the statement count stops
+# being the binding constraint, small enough that no single INSERT approaches a
+# packet size limit.
+ARCHIVE_BATCH_SIZE = 500
 
 
 def serialize_rule(doc_type, is_mandatory=True, order=0, allowed_extensions=None):
@@ -3197,11 +3232,18 @@ def serialize_hr_application(app):
     sub_dept = None
     dmra_date = None
     dmra_att = None
-    
+    # The END DATE AS STORED, written when the offer letter was issued and read
+    # by the certificate, the completion report and the archive. The dashboard
+    # used to recompute its own estimate instead, so a corrected completion date
+    # changed both documents and neither queue. Empty until a letter is issued;
+    # the dashboard estimates only while this is empty.
+    completion_doj = None
+
     if joining:
         req_doj = str(joining.requested_doj) if joining.requested_doj else ""
         allotted_doj = str(joining.allotted_date_of_joining) if joining.allotted_date_of_joining else req_doj
         actual_doj = str(joining.actual_date_of_joining) if joining.actual_date_of_joining else None
+        completion_doj = str(joining.date_of_completion) if joining.date_of_completion else None
         s_dept = getattr(joining, 'allotted_sub_department', None)
         sub_dept = getattr(s_dept, 'sub_department_name', None)
         dmra_date = str(joining.dmra_session_date) if joining.dmra_session_date else None
@@ -3381,7 +3423,15 @@ def serialize_hr_application(app):
             "grading": getattr(academic, 'grading_system', ""),
             "score": str(academic.current_score) if academic and academic.current_score else ""
         },
-        "internship": {"duration": f"{app.duration_weeks} Weeks"},
+        # 'duration' is the printable text and is kept because existing markup
+        # binds to it. 'weeks' is the same value as a NUMBER: the dashboard used
+        # to read the digits back out of the text and fall back to 4 when it
+        # found none, so an application whose duration had not been chosen yet
+        # silently displayed and sorted as a four-week internship. A missing
+        # duration now arrives as None and is shown as unknown.
+        "internship": {"duration": f"{app.duration_weeks} Weeks",
+                       "weeks": app.duration_weeks},
+        "completionDate": completion_doj,
         "referrer": {"id": ref_id, "designation": ref_desig, "dept": ref_dept, "email": ref_email},
         "docs": doc_dict,
         "documentRules": application_rules(app),
@@ -3411,88 +3461,323 @@ class HROmniQueueAPIView(APIView):
                         status=status.HTTP_200_OK)
 
 
-def serialize_archived_application(rec):
-    """One archived record, in the shape the archive list and drawer consume.
+def archived_cycle_label(rec):
+    """'Summer 2026', from an archived record's own term and year."""
+    return f"{rec.session_term} {rec.application_year}"
+
+
+def serialize_archived_row(rec):
+    """One archived record as the TABLE needs it, and nothing more.
+
+    This is the cheap half of a deliberate split. It reads only the
+    archived_applications row itself -- no documents, no requirements, no
+    timeline, no academic details -- so listing a cycle costs ONE query however
+    many records it holds.
+
+    That split is the whole reason the archive can page at all. The previous
+    serialiser built the full drawer payload for every record in the cycle
+    before sending anything, at four extra queries each: a 2,000-application
+    cycle was roughly 10,000 queries and several megabytes of JSON, most of it
+    describing records nobody would open.
+
+    The expensive half is serialize_archived_for_drawer(), run ONCE, when a
+    drawer is actually opened.
+    """
+    doj = rec.actual_date_of_joining or rec.allotted_date_of_joining
+    return {
+        "ticket": rec.application_code,
+        "name": rec.student_name,
+        "cycle": archived_cycle_label(rec),
+        "status": rec.status,
+        "ward": bool(rec.is_employee_ward),
+        "submitted": rec.created_at.strftime('%d-%m-%Y') if rec.created_at else "",
+        "department": rec.department_name or "",
+        "referrerName": rec.referrer_name or "",
+        "doj": doj.strftime('%d-%m-%Y') if doj else "",
+        # The ONLY badge the archive shows. Waitlisting, resubmission and
+        # lifeline history all live in the timeline, where the dates and reasons
+        # are too; a badge here would repeat them without the context.
+        "isInstitutional": rec.referral_source == 'Institutional',
+        # Not displayed. Carried so the drawer can be fetched by a stable key
+        # even if two archived cycles ever shared a ticket number.
+        "originalId": rec.original_application_id,
+    }
+
+
+def archived_outcome_stage(rec):
+    """How far this candidate actually got, derived rather than stored.
+
+    'Completed' and 'Rejected' is a blunt cut. Rejected covers a candidate
+    turned away in week one over a bad photograph AND somebody who served the
+    full internship and failed their mentor's assessment -- filed identically,
+    though they are not remotely the same record.
+
+    Every branch reads a field the archive already holds, so this needs no
+    column of its own and cannot fall out of step with the data.
+    """
+    if rec.status == 'Completed':
+        return 'completed'
+    if rec.rejection_category == 'Unsatisfactory Evaluation':
+        # Served the internship and failed it. There is no honest version of the
+        # certificate for this, so the application is rejected under its own
+        # category -- but the person did the work.
+        return 'failed_evaluation'
+    if rec.actual_date_of_joining:
+        return 'joined_not_completed'
+    if rec.allotted_date_of_joining:
+        return 'offered_never_joined'
+    return 'rejected_at_verification'
+
+
+def serialize_archived_for_drawer(rec):
+    """One archived record in the EXACT shape serialize_hr_application returns.
+
+    The archive is displayed through the same drawer as a live application, so
+    this has to match that serialiser's output key for key. Where it cannot --
+    an archived record has no pending correction to approve and no live
+    document rows -- the key is present and empty rather than absent, because
+    the drawer reads these fields unconditionally and a missing one throws.
 
     Built ENTIRELY from the archived_* tables. It touches no live table, so it
-    reads correctly even after the document catalogue, the sub-department list
-    and the cycle configuration have all changed -- which, given these records
-    are kept for years, they will have.
+    reads correctly after the document catalogue, the sub-department list and
+    the cycle configuration have all changed -- which, over a retention period,
+    they will.
     """
     aid = rec.original_application_id
     academic = ArchivedAcademicDetails.objects.filter(original_application_id=aid).first()
 
-    # Current version of each document, by name.
+    # --- DOCUMENTS ------------------------------------------------------
+    # Keyed by doc_<doc_type_id> to match rule['key'], exactly as the live
+    # drawer keys them. This is why doc_type_id is carried into the archive:
+    # matching on NAME alone showed every requirement as unsupplied while the
+    # file sat right there.
+    #
+    # Highest version wins, which is what current_documents() resolves to on
+    # the live side.
     docs = {}
-    for d in ArchivedDocuments.objects.filter(original_application_id=aid).order_by('-version'):
-        if d.doc_type_name not in docs:
-            docs[d.doc_type_name] = {
-                "name": Path(str(d.file_path)).name,
-                "path": d.file_path,
+    annexure_b_file = None
+    annexure_b_view = None
+    dmra_exemption_file = None
+    dmra_exemption_view = None
+    offer_letter_doc = None
+    certificate_doc = None
+
+    for d in (ArchivedDocuments.objects
+              .filter(original_application_id=aid)
+              .order_by('-version', '-archive_doc_id')):
+        key = (document_slug(d.doc_type_id) if d.doc_type_id
+               else document_slug_for_name(d.doc_type_name))
+        file_name = Path(str(d.file_path)).name
+        if key not in docs:
+            docs[key] = {
+                "name": file_name,
+                "viewUrl": archived_document_view_url(d),
+                # Every archived document is served through the secure endpoint.
+                # WHAT happens there differs -- an archived Aadhaar card is
+                # watermarked, an archived offer letter is served for printing --
+                # and that is decided by is_system_generated, carried on the row.
+                "protected": True,
+                "isGenerated": bool(d.is_system_generated),
                 "version": d.version,
                 "verification": d.verification_status,
-                "viewUrl": archived_document_view_url(d),
             }
 
-    # What the candidate was ASKED for. Empty is a MEANINGFUL answer -- a college
-    # referral rejected before its form was filled was never asked for anything,
-    # and the drawer says exactly that rather than showing today's rules.
-    requirements = [{
+        # Annexure B and the DMRA exemption are collected by HR during the
+        # internship rather than uploaded by the applicant, so the drawer
+        # surfaces them separately. Matched on type NAME without regard to case,
+        # for the reason the live serialiser does: the catalogue stores
+        # 'ANNEXURE B' in capitals like every other text field.
+        type_name = (d.doc_type_name or '').upper()
+        if type_name == 'ANNEXURE B' and annexure_b_file is None:
+            annexure_b_file = file_name
+            annexure_b_view = archived_document_view_url(d)
+        elif type_name == 'DMRA EXEMPTION LETTER' and dmra_exemption_file is None:
+            dmra_exemption_file = file_name
+            dmra_exemption_view = archived_document_view_url(d)
+
+        # The two GENERATED documents, matched by the same name constants the
+        # live code uses. Matched on name rather than looked up through
+        # DocumentTypes because the archive must not depend on the catalogue
+        # still holding a row for either of them.
+        if type_name == OFFER_LETTER_TYPE.upper() and offer_letter_doc is None:
+            offer_letter_doc = docs[key]
+        elif type_name == CERTIFICATE_TYPE.upper() and certificate_doc is None:
+            certificate_doc = docs[key]
+
+    # --- WHAT THE CANDIDATE WAS ASKED FOR --------------------------------
+    # Empty is a MEANINGFUL answer. A college referral rejected before its form
+    # was ever filled was never asked for anything, and the drawer says exactly
+    # that rather than showing today's rules in its place.
+    #
+    # Deliberately NOT falling back to the cycle's live configuration the way
+    # application_rules() does for live records: that fallback exists for
+    # applications predating snapshots, and applying it here would invent a
+    # history this candidate never had.
+    document_rules = [{
+        "id": r.doc_type_id,
+        "key": (document_slug(r.doc_type_id) if r.doc_type_id
+                else document_slug_for_name(r.doc_type_name)),
         "name": r.doc_type_name,
         "format": r.allowed_extensions,
         "isMandatory": bool(r.is_mandatory),
         "requiresConsent": bool(r.requires_consent),
-        "wasSupplied": bool(r.was_supplied),
         "order": r.display_order,
+        "wasSupplied": bool(r.was_supplied),
     } for r in (ArchivedDocumentRequirements.objects
                 .filter(original_application_id=aid)
                 .order_by('display_order', 'archive_requirement_id'))]
 
-    timeline = [{
-        "status": h.new_status,
-        "previousStatus": h.previous_status,
-        "title": TIMELINE_TITLES.get(h.new_status, h.new_status),
-        "remarks": h.remarks or "",
-        # Field names follow the archive table: changed_by_name / changed_by_role.
-        # These read actor_name / actor_role, which no longer exist -- the
-        # archive would have stored every timeline correctly and then failed to
-        # display any of it.
-        "actor": h.changed_by_name or "—",
-        "role": h.changed_by_role or "—",
+    # --- TIMELINE ---------------------------------------------------------
+    # Named audit_history and shaped action/timestamp/actor/role/remark, because
+    # that is what the live drawer's timeline renders.
+    audit_history = [{
+        "action": h.new_status,
         "timestamp": safe_extract_time(h, 'changed_at'),
+        "actor": h.changed_by_name or "System",
+        "role": h.changed_by_role or "API",
+        "remark": h.remarks or "",
     } for h in (ArchivedStatusHistory.objects
                 .filter(original_application_id=aid)
                 .order_by('archive_history_id'))]
 
-    cycle_label_value = f"{rec.session_term} {rec.application_year}"
     doj = rec.actual_date_of_joining or rec.allotted_date_of_joining
 
+    def _date(value):
+        return value.strftime('%Y-%m-%d') if value else None
+
+    # --- OFFER LETTER AND CERTIFICATE -------------------------------------
+    # The same shape the live drawer reads, built from the archived fields.
+    #
+    # pdfUrl and docxUrl are NULL on purpose. Those endpoints regenerate a
+    # document from the live application row, which no longer exists -- and the
+    # Word copy is built on demand and never stored. What DOES exist is the
+    # signed PDF as it was filed, reachable through viewUrl below.
+    offer_doc = offer_letter_doc or {}
+    cert_doc = certificate_doc or {}
+
+    offer_letter_state = {
+        "issued": bool(rec.offer_letter_issued_at),
+        "issuedOn": safe_extract_time(rec, 'offer_letter_issued_at', date_only=True),
+        "signedBy": rec.offer_letter_signed_by_name,
+        "signedByDesignation": rec.offer_letter_signed_by_designation,
+        "version": offer_doc.get('version'),
+        "fileName": offer_doc.get('name'),
+        "viewUrl": offer_doc.get('viewUrl'),
+        "pdfUrl": None,
+        "docxUrl": None,
+        "handoverCompletedAt": safe_extract_time(rec, 'handover_completed_at'),
+    }
+
+    certificate_state = {
+        "issued": bool(rec.certificate_issued_at),
+        "issuedOn": safe_extract_time(rec, 'certificate_issued_at', date_only=True),
+        "signedBy": rec.certificate_signed_by_name,
+        "signedByDesignation": rec.certificate_signed_by_designation,
+        "version": cert_doc.get('version'),
+        "fileName": cert_doc.get('name'),
+        "viewUrl": cert_doc.get('viewUrl'),
+        "pdfUrl": None,
+        "docxUrl": None,
+        "dispatchedAt": safe_extract_time(rec, 'certificate_dispatched_at'),
+        "emailStatus": rec.certificate_email_status or None,
+        # An archived cycle cannot hold a correction awaiting approval: nothing
+        # closes with work still parked with HR-APP.
+        "pending": None,
+    }
+
     return {
+        # --- IDENTITY -----------------------------------------------------
+        "id": rec.original_application_id,
         "ticket": rec.application_code,
         "name": rec.student_name,
-        "cycle": cycle_label_value,
-        "cycleTerm": rec.session_term,
-        "cycleYear": rec.application_year,
-        "status": rec.status,
+        "cycle": archived_cycle_label(rec),
         "department": rec.department_name or "",
-        "subDepartment": rec.allotted_sub_department or "",
-        "referrerName": rec.referrer_name or "",
-        "referralSource": rec.referral_source or "Employee",
-        "isInstitutional": rec.referral_source == 'Institutional',
-        "ward": bool(rec.is_employee_ward),
-        "waitlisted": bool(rec.is_waitlisted),
-        "noShow": bool(rec.is_no_show),
-        "rejectionCategory": rec.rejection_category or "",
-        "submitted": rec.created_at.strftime('%d-%m-%Y') if rec.created_at else "",
-        "doj": doj.strftime('%d-%m-%Y') if doj else "",
-        "dojRaw": doj.strftime('%Y-%m-%d') if doj else "",
-        "completion": rec.date_of_completion.strftime('%d-%m-%Y') if rec.date_of_completion else "",
-        "completionRaw": rec.date_of_completion.strftime('%Y-%m-%d') if rec.date_of_completion else "",
+        "status": rec.status,
+        "date": rec.created_at.strftime('%d-%m-%Y') if rec.created_at else "",
+        "originalSubmissionDate": rec.created_at.strftime('%d-%m-%Y') if rec.created_at else "",
+
+        # --- THE READ-ONLY GUARD ------------------------------------------
+        # ONE flag, read once at the top of the drawer, rather than a condition
+        # on each action panel. An action added to the drawer next year is then
+        # disabled by default instead of being live on closed records until
+        # somebody remembers it exists.
+        "isArchivedRecord": True,
         "archivedOn": rec.archived_at.strftime('%d-%m-%Y') if rec.archived_at else "",
-        "duration": f"{rec.duration_weeks} Weeks" if rec.duration_weeks else "",
+        "outcomeStage": archived_outcome_stage(rec),
+
+        # --- DATES --------------------------------------------------------
+        "doj": _date(rec.requested_date_of_joining) or "",
+        "allottedDoj": _date(rec.allotted_date_of_joining) or _date(rec.requested_date_of_joining) or "",
+        "actualDoj": _date(rec.actual_date_of_joining),
+        "completionDate": _date(rec.date_of_completion),
+        "dojDisplay": doj.strftime('%d-%m-%Y') if doj else "",
+
+        # --- FLAGS --------------------------------------------------------
+        "waitlisted": bool(rec.is_waitlisted),
+        "ward": bool(rec.is_employee_ward),
+        "isNoShow": bool(rec.is_no_show),
+        "isResubmitted": bool(rec.is_resubmitted),
+        "isAdminEscalated": bool(rec.is_admin_escalated),
+        "dojLifelineUsed": (rec.doj_reschedules_count or 0) >= 1,
+        "referralSource": rec.referral_source,
+        "rejectionCategory": rec.rejection_category,
+        "subDepartment": rec.allotted_sub_department,
+
+        # Bounce-back state. FALSE by definition: a cycle cannot be closed while
+        # anything is still parked with a referrer awaiting their correction.
+        "awaitingReferrerAction": False,
+        "bounceReason": None,
+        "resubmissionBadge": None,
+        "hasUsedDocumentLifeline": False,
+        "documentResubmissionDetails": None,
+        "hasUsedDojLifeline": (rec.doj_reschedules_count or 0) >= 1,
+        "dojResubmissionDetails": None,
+
+        # --- CLEARANCE ----------------------------------------------------
+        "evaluationResult": rec.mentor_evaluation_result or "",
+        "evaluationRemark": rec.mentor_evaluation_remarks or "",
+        "attendanceCleared": bool(rec.attendance_record_verified),
+        "reportCleared": bool(rec.project_report_verified),
+        "universalTextField": rec.project_report_title or "",
+        "projectTitle": rec.project_report_title or "",
+        # Nothing is left to block: the internship is closed. An empty list is
+        # what the drawer reads as "no blockers".
+        "clearanceBlockers": [],
+        "approvalRefId": rec.approval_reference_id,
+        "formCorrectionRemarks": rec.form_correction_remarks or "",
+
+        # --- DMRA ---------------------------------------------------------
+        "dmraSessionDate": _date(rec.dmra_session_date),
+        "dmraAttended": (None if rec.dmra_attended is None
+                         else ("true" if rec.dmra_attended else "false")),
+        "dmraExemptionFile": dmra_exemption_file,
+        "dmraExemption": ({"fileName": dmra_exemption_file, "viewUrl": dmra_exemption_view}
+                          if dmra_exemption_file else None),
+        "annexureBFile": annexure_b_file,
+        "annexureB": ({"fileName": annexure_b_file, "viewUrl": annexure_b_view}
+                      if annexure_b_file else None),
+
+        # --- HANDOVER -----------------------------------------------------
+        "hardCopyUndertaking": bool(rec.hardcopy_undertaking_received),
+        "hardCopyAttendance": bool(rec.hardcopy_attendance_received),
+
+        # --- DOCUMENTS AND LETTERS ----------------------------------------
+        "offerLetter": offer_letter_state,
+        "certificate": certificate_state,
+        "pendingOfferLetter": None,
+        "customOverrideFile": None,
+
+        # --- THE PERSON ---------------------------------------------------
         "bio": {
-            "email": rec.student_email or "",
+            "salutation": rec.student_salutation or "",
+            "father": rec.student_fathers_name or "",
+            "gender": rec.student_gender or "",
+            "dob": _date(rec.student_date_of_birth) or "",
             "mobile": rec.student_mobile or "",
+            "email": rec.student_email or "",
+            "address": rec.student_permanent_address or "",
+            "emergencyName": rec.student_emergency_contact_name or "",
+            "emergencyMobile": rec.student_emergency_contact_mobile or "",
             "aadhaar_number": rec.student_aadhaar or "",
         },
         "academic": {
@@ -3504,9 +3789,21 @@ def serialize_archived_application(rec):
             "grading": rec.grading_system or "",
             "score": str(rec.current_score) if rec.current_score is not None else "",
         },
+        "internship": {
+            "duration": f"{rec.duration_weeks} Weeks" if rec.duration_weeks else "",
+            "weeks": rec.duration_weeks,
+        },
+        "referrerName": rec.referrer_name or "",
+        "referrer": {
+            "id": rec.referrer_employee_code or ("INSTITUTIONAL" if rec.referral_source == 'Institutional' else ""),
+            "designation": rec.referrer_designation or ("COLLEGE REFERRAL" if rec.referral_source == 'Institutional' else ""),
+            "dept": rec.referrer_department or ("EXTERNAL" if rec.referral_source == 'Institutional' else ""),
+            "email": rec.referrer_notification_email or "",
+        },
+
         "docs": docs,
-        "requirements": requirements,
-        "timeline": timeline,
+        "documentRules": document_rules,
+        "audit_history": audit_history,
     }
 
 
@@ -3516,26 +3813,25 @@ def archive_cycle_records(cycle, actor_user):
     COPY, VERIFY, THEN DELETE -- inside the caller's transaction, so a failure
     at any point leaves the cycle exactly as it was rather than half archived.
 
-    Five things are copied per application, because everything attached to an
-    application is ON DELETE CASCADE and would otherwise be destroyed with it:
+    Six things are copied, because everything attached to an application is ON
+    DELETE CASCADE and would otherwise be destroyed with it:
 
         1. the application record          -> archived_applications
         2. academic details                -> archived_academic_details
         3. documents (paths only)          -> archived_documents
         4. what it was ASKED to supply     -> archived_document_requirements
         5. its timeline                    -> archived_status_history
+        6. the cycle's approved DOJ list   -> archived_cycle_joining_dates
 
-    (4) and (5) previously had nowhere to go. Without (5) an archived record has
-    no account of what happened to it -- and for a college referral rejected
-    before its form was ever filled, the timeline is the ONLY record, since such
-    an application has no documents and no academic details. Without (4) the
-    archive cannot tell a document that was never asked for from one that was
-    asked for and declined.
+    (6) is per-CYCLE rather than per-application, and it is what lets the
+    archive's joining-date calendar distinguish a normal intake date from one
+    HR allotted outside the approved calendar.
 
     FILES ARE NOT MOVED. They stay under PROTECTED_DOCUMENT_ROOT and the archive
-    keeps their paths. Moving thousands of files mid-transaction is a large
-    operation that can half-fail, and it gains nothing: that folder is already
-    outside the web root and unreachable by URL.
+    keeps their paths, which are stored RELATIVE to a configured root -- so
+    relocating the document folder is a settings change and archived documents
+    keep resolving. What is new here is that every file is CHECKED before
+    anything is deleted; see below.
 
     The archive is deliberately SELF-CONTAINED. Every field is a name or a value
     -- never a link to document_types, sub_departments or internship_cycles --
@@ -3547,10 +3843,14 @@ def archive_cycle_records(cycle, actor_user):
     """
     applications = (Applications.objects
                     .filter(cycle=cycle)
-                    .select_related('student', 'department'))
+                    .select_related('student', 'department',
+                                    'referrer_employee',
+                                    'referrer_employee__department',
+                                    'offer_letter_signed_by_user__employee',
+                                    'certificate_signed_by_user__employee'))
 
     counts = {'applications': 0, 'documents': 0, 'requirements': 0,
-              'history': 0, 'drafts': 0}
+              'history': 0, 'drafts': 0, 'joiningDates': 0}
     student_ids = []
 
     # --- SAVED DRAFTS ----------------------------------------------------
@@ -3569,6 +3869,24 @@ def archive_cycle_records(cycle, actor_user):
         purge_draft(draft)
         counts['drafts'] += 1
 
+    # --- ROWS ARE BUILT IN MEMORY, THEN INSERTED IN BATCHES ---------------
+    # The previous version called .create() once per row inside a single
+    # transaction. At DMRC's volumes -- 500 to 2,000 applications, each with
+    # documents, requirements and a timeline -- that is tens of thousands of
+    # individual statements in one transaction. TiDB caps both the statement
+    # count and the total size of a transaction, so a full-size cycle could fail
+    # outright, and even where it succeeded the round trips alone could outlast
+    # the web server's timeout.
+    #
+    # Correctness is unchanged: this is still one transaction, and the delete
+    # below still happens only after the copy is verified.
+    archived_rows = []
+    academic_rows = []
+    document_rows = []
+    requirement_rows = []
+    history_rows = []
+    missing_files = []
+
     for app in applications:
         student = app.student
         academic = AcademicDetails.objects.filter(application=app).first()
@@ -3579,19 +3897,40 @@ def archive_cycle_records(cycle, actor_user):
         if app.referral_source == 'Institutional':
             referrer_name = getattr(academic, 'college_name', None) or 'INSTITUTIONAL'
             referrer_code = None
+            referrer_designation = 'COLLEGE REFERRAL'
+            referrer_department = 'EXTERNAL'
         else:
             referrer = app.referrer_employee
             referrer_name = getattr(referrer, 'full_name', None)
             referrer_code = getattr(referrer, 'employee_code', None)
+            # The post and unit AS THEY WERE. The directory follows an employee
+            # when they are promoted or transferred; the record of who sponsored
+            # this candidate must not follow them.
+            referrer_designation = getattr(referrer, 'designation', None)
+            referrer_department = getattr(
+                getattr(referrer, 'department', None), 'department_name', None)
 
-        ArchivedApplications.objects.create(
+        archived_rows.append(ArchivedApplications(
             original_application_id=app.application_id,
             application_code=app.application_code,
             dmrc_reference_code=getattr(app, 'dmrc_reference_code', None),
+
+            # --- THE CANDIDATE, IN FULL -----------------------------------
+            # All eleven, because the archived record is now displayed through
+            # the same drawer as a live one. Seven of these were previously
+            # discarded, so the drawer's personal block would have opened blank.
+            student_salutation=getattr(student, 'salutation', None),
             student_name=getattr(student, 'full_name', '') or '',
+            student_fathers_name=getattr(student, 'fathers_name', None),
+            student_gender=getattr(student, 'gender', None),
+            student_date_of_birth=getattr(student, 'date_of_birth', None),
             student_email=getattr(student, 'personal_email', '') or '',
             student_mobile=getattr(student, 'mobile_number', None),
             student_aadhaar=getattr(student, 'aadhaar_number', None),
+            student_permanent_address=getattr(student, 'permanent_address', None),
+            student_emergency_contact_name=getattr(student, 'emergency_contact_name', None),
+            student_emergency_contact_mobile=getattr(student, 'emergency_contact_mobile', None),
+
             college_name=getattr(academic, 'college_name', None) or '\u2014',
             branch_name=getattr(academic, 'branch_name', None),
             grading_system=getattr(academic, 'grading_system', None),
@@ -3612,30 +3951,66 @@ def archive_cycle_records(cycle, actor_user):
             referral_source=app.referral_source,
             referrer_name=referrer_name,
             referrer_employee_code=referrer_code,
+            referrer_designation=referrer_designation,
+            referrer_department=referrer_department,
             referrer_notification_email=getattr(app, 'referrer_notification_email', None),
+
+            # Three dates. The gap between requested and allotted is the record
+            # of a scheduling decision somebody made.
+            requested_date_of_joining=getattr(joining, 'requested_doj', None),
             allotted_date_of_joining=getattr(joining, 'allotted_date_of_joining', None),
             actual_date_of_joining=getattr(joining, 'actual_date_of_joining', None),
             dmra_session_date=getattr(joining, 'dmra_session_date', None),
             dmra_attended=getattr(joining, 'dmra_attended', None),
             date_of_completion=getattr(joining, 'date_of_completion', None),
             rejection_category=getattr(app, 'rejection_category', None),
-            # Who signed the offer letter, by NAME -- staff leave and accounts
-            # are removed, but an archived letter must still say who signed it.
+
+            # --- OFFER LETTER AND HANDOVER --------------------------------
             offer_letter_issued_at=getattr(app, 'offer_letter_issued_at', None),
             offer_letter_signed_by_name=getattr(
                 getattr(getattr(app, 'offer_letter_signed_by_user', None), 'employee', None),
                 'full_name', None),
+            offer_letter_signed_by_designation=getattr(
+                getattr(getattr(app, 'offer_letter_signed_by_user', None), 'employee', None),
+                'designation', None),
+            hardcopy_undertaking_received=bool(getattr(app, 'hardcopy_undertaking_received', 0)),
+            hardcopy_attendance_received=bool(getattr(app, 'hardcopy_attendance_received', 0)),
+            handover_completed_at=getattr(app, 'handover_completed_at', None),
+
+            # --- CLEARANCE, CERTIFICATE AND DISPATCH ----------------------
+            # NONE OF THESE WERE PREVIOUSLY COPIED. The offer-letter fields
+            # above were, and these were skipped -- so every intern who actually
+            # completed was archived with no evaluation, no project title and no
+            # record of who signed their certificate. Archiving is irreversible,
+            # so that was destroyed at closure rather than merely hidden.
+            mentor_evaluation_result=getattr(app, 'mentor_evaluation_result', None),
+            mentor_evaluation_remarks=getattr(app, 'mentor_evaluation_remarks', None),
+            project_report_title=getattr(app, 'project_report_title', None),
+            attendance_record_verified=bool(getattr(app, 'attendance_record_verified', 0)),
+            project_report_verified=bool(getattr(app, 'project_report_verified', 0)),
+            certificate_issued_at=getattr(app, 'certificate_issued_at', None),
+            certificate_signed_by_name=getattr(
+                getattr(getattr(app, 'certificate_signed_by_user', None), 'employee', None),
+                'full_name', None),
+            certificate_signed_by_designation=getattr(
+                getattr(getattr(app, 'certificate_signed_by_user', None), 'employee', None),
+                'designation', None),
+            certificate_dispatched_at=getattr(app, 'certificate_dispatched_at', None),
+            certificate_email_status=getattr(app, 'certificate_email_status', None),
+            form_correction_remarks=getattr(app, 'form_correction_remarks', None),
+
             approval_reference_id=getattr(app, 'approval_reference_id', None),
             is_admin_escalated=bool(getattr(app, 'is_admin_escalated', 0)),
             is_resubmitted=bool(getattr(app, 'is_resubmitted', 0)),
             doj_reschedules_count=app.doj_reschedules_count or 0,
             archived_year=timezone.localdate().year,
             created_at=app.created_at or timezone.now(),
-        )
+            archived_at=timezone.now(),
+        ))
         counts['applications'] += 1
 
         if academic:
-            ArchivedAcademicDetails.objects.create(
+            academic_rows.append(ArchivedAcademicDetails(
                 original_application_id=app.application_id,
                 university_name=academic.university_name,
                 college_name=academic.college_name or '\u2014',
@@ -3644,7 +4019,7 @@ def archive_cycle_records(cycle, actor_user):
                 current_semester=academic.current_semester,
                 grading_system=academic.grading_system,
                 current_score=academic.current_score,
-            )
+            ))
 
         # --- DOCUMENTS: paths only; the files stay on disk ----------------
         supplied_names = set()
@@ -3652,10 +4027,25 @@ def archive_cycle_records(cycle, actor_user):
             type_name = getattr(doc.doc_type, 'type_name', 'Unknown')
             if doc.is_current:
                 supplied_names.add(type_name)
-            ArchivedDocuments.objects.create(
+
+            # --- VERIFY THE FILE IS ACTUALLY THERE ------------------------
+            # Checked BEFORE anything is deleted. A file already missing from
+            # disk at closure -- removed by hand, lost in a restore, never
+            # written because of an earlier failure -- would otherwise be
+            # recorded as archived and only discovered years later, when there
+            # is no live row left to compare it against.
+            if stored_document_path(doc) is None:
+                missing_files.append(
+                    f"{app.application_code}: {type_name} ({doc.file_path})")
+
+            document_rows.append(ArchivedDocuments(
                 original_application_id=app.application_id,
                 original_document_id=doc.document_id,
                 application_code=app.application_code,
+                # Carried so the drawer can pair this file with the requirement
+                # it satisfied. Matching on name alone showed every requirement
+                # as unsupplied while the file sat right there.
+                doc_type_id=doc.doc_type_id,
                 doc_type_name=type_name,
                 file_path=doc.file_path,
                 version=doc.version or 1,
@@ -3664,16 +4054,17 @@ def archive_cycle_records(cycle, actor_user):
                 verification_status=doc.verification_status,
                 hr_remarks=getattr(doc, 'hr_remarks', None),
                 uploaded_at=doc.uploaded_at or timezone.now(),
-            )
+            ))
             counts['documents'] += 1
 
         # --- WHAT IT WAS ASKED FOR ---------------------------------------
         for req in (ApplicationDocumentRequirements.objects
                     .filter(application=app)
                     .order_by('display_order', 'requirement_id')):
-            ArchivedDocumentRequirements.objects.create(
+            requirement_rows.append(ArchivedDocumentRequirements(
                 original_application_id=app.application_id,
                 application_code=app.application_code,
+                doc_type_id=req.doc_type_id,
                 doc_type_name=req.doc_type_name,
                 allowed_extensions=req.allowed_extensions,
                 is_mandatory=bool(req.is_mandatory),
@@ -3682,16 +4073,17 @@ def archive_cycle_records(cycle, actor_user):
                 # Recorded rather than derived, so the archive can answer
                 # "was this supplied?" without joining anything.
                 was_supplied=req.doc_type_name in supplied_names,
-            )
+            ))
             counts['requirements'] += 1
 
         # --- TIMELINE -----------------------------------------------------
         for h in (ApplicationStatusHistory.objects
                   .filter(application=app)
-                  .select_related('changed_by_user')
+                  .select_related('changed_by_user__employee',
+                                  'changed_by_user__role')
                   .order_by('history_id')):
             actor = h.changed_by_user
-            ArchivedStatusHistory.objects.create(
+            history_rows.append(ArchivedStatusHistory(
                 original_application_id=app.application_id,
                 application_code=app.application_code,
                 previous_status=h.previous_status,
@@ -3702,10 +4094,55 @@ def archive_cycle_records(cycle, actor_user):
                 changed_by_role=getattr(getattr(actor, 'role', None), 'role_name', None),
                 remarks=h.remarks,
                 changed_at=h.changed_at,
-            )
+                archived_at=timezone.now(),
+            ))
             counts['history'] += 1
 
         student_ids.append(app.student_id)
+
+    # --- REFUSE ON A MISSING FILE ----------------------------------------
+    # Named individually, the way the cycle already names the tickets blocking
+    # closure. Archiving is irreversible: an administrator has to be able to
+    # find the file or accept its loss knowingly, not discover it in 2031.
+    if missing_files:
+        shown = missing_files[:10]
+        more = len(missing_files) - len(shown)
+        raise RuntimeError(
+            f"{len(missing_files)} document file(s) for "
+            f"{cycle.session_term} {cycle.application_year} are missing from "
+            f"storage and cannot be archived: "
+            + "; ".join(shown)
+            + (f"; and {more} more" if more else "")
+            + "."
+        )
+
+    # --- WRITE ------------------------------------------------------------
+    ArchivedApplications.objects.bulk_create(archived_rows, batch_size=ARCHIVE_BATCH_SIZE)
+    ArchivedAcademicDetails.objects.bulk_create(academic_rows, batch_size=ARCHIVE_BATCH_SIZE)
+    ArchivedDocuments.objects.bulk_create(document_rows, batch_size=ARCHIVE_BATCH_SIZE)
+    ArchivedDocumentRequirements.objects.bulk_create(requirement_rows, batch_size=ARCHIVE_BATCH_SIZE)
+    ArchivedStatusHistory.objects.bulk_create(history_rows, batch_size=ARCHIVE_BATCH_SIZE)
+
+    # --- THE CYCLE'S APPROVED JOINING CALENDAR ---------------------------
+    # Snapshotted so the archive's date filter can tell a normal intake date
+    # from one HR allotted outside the approved calendar. Withdrawn dates are
+    # kept with was_enabled = False rather than skipped: a date an administrator
+    # removed mid-cycle can still have people allotted to it, and dropping it
+    # would misreport those candidates as exceptions.
+    joining_date_rows = [
+        ArchivedCycleJoiningDates(
+            session_term=cycle.session_term,
+            application_year=cycle.application_year,
+            allowed_doj=d.allowed_doj,
+            was_enabled=bool(d.is_active),
+            archived_at=timezone.now(),
+        )
+        for d in CycleJoiningDates.objects.filter(cycle=cycle).order_by('allowed_doj')
+        if d.allowed_doj
+    ]
+    ArchivedCycleJoiningDates.objects.bulk_create(joining_date_rows,
+                                                  batch_size=ARCHIVE_BATCH_SIZE)
+    counts['joiningDates'] = len(joining_date_rows)
 
     # --- VERIFY BEFORE DELETING ------------------------------------------
     # Nothing is destroyed until the copy is confirmed present. On failure the
@@ -3751,6 +4188,169 @@ def archive_cycle_records(cycle, actor_user):
     return counts
 
 
+# How many archived records are drawn at once.
+#
+# Matches the two live queues, which page at 25. Unlike those, this is not only
+# a drawing limit: the archive slices in SQL, so a page is also all that is ever
+# fetched. The EXPORTS remain unpaged -- see UniversalExportAPIView.
+ARCHIVE_PAGE_SIZE = 25
+
+# What may be sorted on, and the archived column behind each.
+#
+# A fixed map rather than passing the request's value into order_by(): that
+# would let a crafted request order by any column in the table, including ones
+# never meant to leave it.
+ARCHIVE_SORT_COLUMNS = {
+    'ticket': 'application_code',
+    'name': 'student_name',
+    'college': 'college_name',
+    'department': 'department_name',
+    'submitted': 'created_at',
+    'doj': 'actual_date_of_joining',
+    'completion': 'date_of_completion',
+    'duration': 'duration_weeks',
+}
+
+# Sorts where an EMPTY value must sink to the bottom whichever way the column is
+# ordered. A rejected candidate never joined and never completed; scattering
+# those blanks through the dated records makes the list unreadable. The live
+# archive screen already behaved this way in the browser and the behaviour is
+# preserved now that sorting happens in SQL.
+ARCHIVE_SORT_NULLS_LAST = {'doj', 'completion', 'duration', 'submitted'}
+
+
+def archive_filter_queryset(records, params):
+    """Apply the archive's filters to a queryset, in SQL.
+
+    Every filter reads a field the archive holds in its own tables. Nothing here
+    touches a live cycle, department or document type: the point of the archive
+    is that it still reads correctly once all three have changed.
+    """
+    def value(name):
+        raw = (params.get(name) or '').strip()
+        return raw or None
+
+    def flag(name):
+        return (params.get(name) or '').lower() in ('1', 'true', 'yes')
+
+    outcome = value('outcome')
+    if outcome:
+        records = records.filter(status=outcome)
+
+    # HOW FAR THEY GOT. Derived from stored fields rather than a column of its
+    # own, so it cannot fall out of step with the data -- see
+    # archived_outcome_stage(), which is the same logic for a single record.
+    stage = value('stage')
+    if stage == 'completed':
+        records = records.filter(status='Completed')
+    elif stage == 'failed_evaluation':
+        # Served the internship and failed the assessment. Not the same record
+        # as somebody turned away in week one, though both read 'Rejected'.
+        records = records.exclude(status='Completed').filter(
+            rejection_category='Unsatisfactory Evaluation')
+    elif stage == 'joined_not_completed':
+        records = (records.exclude(status='Completed')
+                   .exclude(rejection_category='Unsatisfactory Evaluation')
+                   .filter(actual_date_of_joining__isnull=False))
+    elif stage == 'offered_never_joined':
+        records = (records.exclude(status='Completed')
+                   .exclude(rejection_category='Unsatisfactory Evaluation')
+                   .filter(actual_date_of_joining__isnull=True,
+                           allotted_date_of_joining__isnull=False))
+    elif stage == 'rejected_at_verification':
+        records = (records.exclude(status='Completed')
+                   .exclude(rejection_category='Unsatisfactory Evaluation')
+                   .filter(actual_date_of_joining__isnull=True,
+                           allotted_date_of_joining__isnull=True))
+
+    if value('department'):
+        records = records.filter(department_name=params.get('department').strip())
+    if value('subDepartment'):
+        records = records.filter(allotted_sub_department=params.get('subDepartment').strip())
+    if value('source'):
+        records = records.filter(referral_source=params.get('source').strip())
+    if value('rejectionCategory'):
+        records = records.filter(rejection_category=params.get('rejectionCategory').strip())
+    if value('evaluationResult'):
+        records = records.filter(mentor_evaluation_result=params.get('evaluationResult').strip())
+    if value('emailStatus'):
+        records = records.filter(certificate_email_status=params.get('emailStatus').strip())
+
+    duration = value('duration')
+    if duration:
+        try:
+            records = records.filter(duration_weeks=int(duration))
+        except (TypeError, ValueError):
+            pass
+
+    # A SINGLE joining date, because joining dates cluster on a handful of
+    # approved intake dates -- 'the batch that joined on 14 July' is the real
+    # question. Matched against EITHER date: a candidate who was allotted a date
+    # and never arrived still belongs to that intake.
+    doj = value('doj')
+    if doj:
+        records = records.filter(
+            Q(actual_date_of_joining=doj) | Q(allotted_date_of_joining=doj))
+
+    # Completion dates are a RANGE, because they do not cluster: each is that
+    # person's joining date plus their own duration, and with 4, 6 and 8-week
+    # internships mixed together a single date would usually match nobody.
+    if value('completedFrom'):
+        records = records.filter(date_of_completion__gte=params.get('completedFrom').strip())
+    if value('completedTo'):
+        records = records.filter(date_of_completion__lte=params.get('completedTo').strip())
+
+    if flag('ward'):
+        records = records.filter(is_employee_ward=True)
+    if flag('waitlisted'):
+        records = records.filter(is_waitlisted=True)
+    if flag('noShow'):
+        records = records.filter(is_no_show=True)
+    if flag('resubmitted'):
+        records = records.filter(is_resubmitted=True)
+    if flag('adminEscalated'):
+        records = records.filter(is_admin_escalated=True)
+    if flag('dojRescheduleUsed'):
+        records = records.filter(doj_reschedules_count__gte=1)
+
+    # OFF-CALENDAR JOINING DATE: allotted a day the administrator never
+    # approved. HR may do this deliberately, and after closure this is the only
+    # place it is visible -- which is exactly why an auditor would ask.
+    #
+    # Compared against the SNAPSHOT taken at closure, not against live cycle
+    # configuration, so it keeps answering correctly after the cycle rows have
+    # been tidied away.
+    if flag('offCalendarDoj'):
+        term = params.get('term')
+        year = params.get('year')
+        approved = list(ArchivedCycleJoiningDates.objects
+                        .filter(session_term=term, application_year=year)
+                        .values_list('allowed_doj', flat=True))
+        records = records.filter(
+            Q(actual_date_of_joining__isnull=False) |
+            Q(allotted_date_of_joining__isnull=False))
+        if approved:
+            records = records.exclude(actual_date_of_joining__in=approved).exclude(
+                allotted_date_of_joining__in=approved)
+
+    # SEARCH runs after the filters, narrowing what is already on screen.
+    #
+    # Department and sub-department are deliberately NOT searched: both have
+    # their own dropdown, and matching them here as well meant a typed search
+    # quietly returned a different set than the dropdown did.
+    search = value('search')
+    if search:
+        records = records.filter(
+            Q(application_code__icontains=search) |
+            Q(student_name__icontains=search) |
+            Q(college_name__icontains=search) |
+            Q(referrer_name__icontains=search) |
+            Q(referrer_employee_code__icontains=search)
+        )
+
+    return records
+
+
 class HRArchiveAPIView(APIView):
     """Cold Storage Vault -- applications from cycles that have been hard-closed.
 
@@ -3760,11 +4360,19 @@ class HRArchiveAPIView(APIView):
 
     Read entirely from the archived_* tables. Nothing here depends on a live
     cycle, document type or sub-department still existing.
+
+    FILTERED, SORTED AND PAGED IN SQL. It used to serialise every record in a
+    cycle -- the full drawer payload, four extra queries each -- and send the
+    lot for the browser to filter. At DMRC's volumes that is around 10,000
+    queries and several megabytes for a single cycle, most of it describing
+    records nobody would open. The browser now receives one page of nine
+    columns, and the drawer payload is built once, on demand, by
+    /api/hr/archives/record/.
     """
 
     @role_required('SYS-ADMIN')
     def get(self, request):
-        records = ArchivedApplications.objects.all().order_by('application_code')
+        params = request.GET
 
         # The year and cycle pickers offer ONLY what has actually been archived.
         # They used to be hardcoded to 2025 and 2026 with both terms assumed,
@@ -3774,31 +4382,159 @@ class HRArchiveAPIView(APIView):
         # Winter 2026 cycle closed in March 2027 is still Winter 2026 to
         # everyone who goes looking for it.
         cycles_by_year = {}
-        for term, year in records.values_list('session_term', 'application_year').distinct():
+        for term, year in (ArchivedApplications.objects
+                           .values_list('session_term', 'application_year')
+                           .distinct()):
             cycles_by_year.setdefault(str(year), set()).add(f"{term} {year}")
-
         available = {y: sorted(v) for y, v in cycles_by_year.items()}
-
-        term = request.GET.get('term')
-        year = request.GET.get('year')
-        if term and year:
-            records = records.filter(session_term=term, application_year=year)
-        elif year:
-            records = records.filter(application_year=year)
-        else:
-            # Nothing selected yet: send the pickers, not the whole vault.
-            return Response({"records": [], "availableYears": sorted(available.keys(), reverse=True),
-                             "cyclesByYear": available}, status=status.HTTP_200_OK)
-
-        return Response({
-            # Two cycles that somehow share a term and year merge here, because
-            # the archive is keyed by term and year rather than by cycle id.
-            # Ticket numbers stay unique across them: numbering never reuses a
-            # number and checks the archive as well as the live table.
-            "records": [serialize_archived_application(r) for r in records],
+        pickers = {
             "availableYears": sorted(available.keys(), reverse=True),
             "cyclesByYear": available,
+        }
+
+        term = params.get('term')
+        year = params.get('year')
+        if not (term and year):
+            # Nothing selected yet: send the pickers, not the whole vault.
+            return Response({"records": [], "total": 0, "page": 1, "pageCount": 1,
+                             "pageSize": ARCHIVE_PAGE_SIZE, "rangeLabel": "0 of 0",
+                             "options": {}, **pickers}, status=status.HTTP_200_OK)
+
+        # Two cycles that somehow shared a term and year would merge here,
+        # because the archive is keyed by term and year rather than by cycle id.
+        # Ticket numbers stay unique across them: numbering never reuses a
+        # number and checks the archive as well as the live table.
+        cycle_records = ArchivedApplications.objects.filter(
+            session_term=term, application_year=year)
+
+        records = archive_filter_queryset(cycle_records, params)
+
+        # --- SORT ---------------------------------------------------------
+        sort_key = params.get('sortKey') or 'ticket'
+        if sort_key not in ARCHIVE_SORT_COLUMNS:
+            sort_key = 'ticket'
+        column = ARCHIVE_SORT_COLUMNS[sort_key]
+        descending = (params.get('sortDir') or 'asc').lower() == 'desc'
+
+        if sort_key in ARCHIVE_SORT_NULLS_LAST:
+            # Blanks sink to the bottom in BOTH directions, which is not what
+            # plain DESC does -- it would surface every empty date first.
+            order = F(column).desc(nulls_last=True) if descending else F(column).asc(nulls_last=True)
+            # application_code second, so a page boundary never splits records
+            # that tie on the sort column into an arbitrary order.
+            records = records.order_by(order, 'application_code')
+        else:
+            records = records.order_by(f"-{column}" if descending else column,
+                                       'application_code')
+
+        # --- PAGE ---------------------------------------------------------
+        total = records.count()
+        page_count = max(1, -(-total // ARCHIVE_PAGE_SIZE))
+        try:
+            page = int(params.get('page') or 1)
+        except (TypeError, ValueError):
+            page = 1
+        # CLAMPED rather than rejected: a filter that shortens the list while
+        # the reader is on page 8 should show the last page, not an error and
+        # not an empty table under a pager still claiming page 8 of 2.
+        page = min(max(1, page), page_count)
+        start = (page - 1) * ARCHIVE_PAGE_SIZE
+        window = records[start:start + ARCHIVE_PAGE_SIZE]
+
+        range_label = ("0 of 0" if total == 0 else
+                       f"{start + 1}\u2013{min(start + ARCHIVE_PAGE_SIZE, total)} of {total}")
+
+        return Response({
+            "records": [serialize_archived_row(r) for r in window],
+            "total": total,
+            "page": page,
+            "pageCount": page_count,
+            "pageSize": ARCHIVE_PAGE_SIZE,
+            "rangeLabel": range_label,
+            # The dropdown options for THIS cycle. Computed here because the
+            # browser now holds one page and could no longer derive them: built
+            # from the page, a Department dropdown would list only the
+            # departments that happened to appear in the first 25 rows.
+            "options": archive_filter_options(term, year),
+            **pickers,
         }, status=status.HTTP_200_OK)
+
+
+def archive_filter_options(term, year):
+    """The dropdown values and calendar marks for ONE archived cycle.
+
+    Only what actually appears in this cycle. Offering today's live lists would
+    suggest options matching nothing, since departments, units and document
+    rules all change over the years the archive is kept.
+    """
+    cycle_records = ArchivedApplications.objects.filter(
+        session_term=term, application_year=year)
+
+    def distinct(column):
+        return sorted({v for v in cycle_records.values_list(column, flat=True) if v})
+
+    # --- THE JOINING CALENDAR -----------------------------------------
+    # Three kinds of day, which is what the filter's calendar marks:
+    #
+    #   approved and used        a normal intake date
+    #   approved, never used     offered, nobody was allotted it
+    #   used but NEVER approved  an exception was made for that candidate
+    #
+    # The third is the one worth having. HR may allot ANY date when scheduling,
+    # and after closure this is the only place that decision is visible.
+    approved = sorted({d.strftime('%Y-%m-%d') for d in
+                       ArchivedCycleJoiningDates.objects
+                       .filter(session_term=term, application_year=year)
+                       .values_list('allowed_doj', flat=True) if d})
+
+    used = set()
+    for actual, allotted in cycle_records.values_list('actual_date_of_joining',
+                                                      'allotted_date_of_joining'):
+        chosen = actual or allotted
+        if chosen:
+            used.add(chosen.strftime('%Y-%m-%d'))
+
+    return {
+        "departments": distinct('department_name'),
+        "subDepartments": distinct('allotted_sub_department'),
+        "rejectionCategories": distinct('rejection_category'),
+        "durations": sorted({v for v in
+                             cycle_records.values_list('duration_weeks', flat=True)
+                             if v}),
+        "approvedDojDates": approved,
+        "usedDojDates": sorted(used),
+        # Allotted a day the administrator never approved. Sent separately so
+        # the calendar can mark it differently rather than the browser having to
+        # work out the difference itself.
+        "offCalendarDojDates": sorted(used - set(approved)),
+    }
+
+
+class HRArchiveRecordAPIView(APIView):
+    """ONE archived record, in the shape the live drawer consumes.
+
+    Split out from the list because it is the expensive half: documents,
+    requirements, the timeline and the academic details, four queries beyond the
+    record itself. Building that for every record in a cycle just in case one
+    was opened is what made the archive screen unusable at DMRC's volumes.
+
+    SYS-ADMIN only, matching the vault itself.
+    """
+
+    @role_required('SYS-ADMIN')
+    def get(self, request):
+        ticket = (request.GET.get('ticket') or '').strip()
+        if not ticket:
+            return Response({"error": "No ticket was specified."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        rec = ArchivedApplications.objects.filter(application_code=ticket).first()
+        if rec is None:
+            return Response({"error": f"No archived record found for {ticket}."},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        return Response(serialize_archived_for_drawer(rec),
+                        status=status.HTTP_200_OK)
 
 
 class HRApplicationActionAPIView(APIView):
@@ -4066,152 +4802,22 @@ class HRApplicationActionAPIView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-def archive_one_application(app, archived_year):
-    """Copy ONE application and everything attached to it into cold storage.
+# archive_one_application() WAS REMOVED HERE.
+#
+# It archived a SINGLE application and nothing ever called it -- but it was
+# worse than dead, it was broken. It passed actor_name / actor_role to
+# ArchivedStatusHistory, whose fields were renamed to changed_by_name /
+# changed_by_role, so it would have raised TypeError on the first timeline row
+# it touched. It also omitted application_code, original_document_id and
+# is_system_generated when copying documents, which would have left every
+# archived document unopenable in the secure viewer and served DMRC's own
+# letters through the watermarked candidate-document path.
+#
+# Per-application archiving was considered and deliberately NOT built: a cycle
+# is the unit of closure, and archiving one person out of a running cycle would
+# remove them from the queue their colleagues are still working.
 
-    Copies five things, because five things are about to be deleted:
 
-        1. the application record        -> archived_applications
-        2. academic details              -> archived_academic_details
-        3. document files                -> archived_documents
-        4. what was ASKED for            -> archived_document_requirements
-        5. the timeline                  -> archived_status_history
-
-    Every archived table stores NAMES AND VALUES rather than links. The result
-    can be read in full without document_types, sub_departments,
-    cycle_document_requirements or the cycle row -- none of which will still mean
-    the same thing in ten years.
-
-    Raises on any failure. The caller runs this inside a transaction, so a
-    partial archive is never committed and the cycle stays open.
-    """
-    student = app.student
-    academic = AcademicDetails.objects.filter(application=app).first()
-    joining = JoiningDetails.objects.filter(application=app).first()
-    cycle = app.cycle
-
-    referrer = getattr(app, 'referrer_employee', None)
-    if app.referral_source == 'Institutional':
-        # The institution stands where the employee would be, exactly as it does
-        # on every live screen.
-        referrer_name = academic.college_name if academic else None
-        referrer_code = None
-    else:
-        referrer_name = getattr(referrer, 'full_name', None)
-        referrer_code = getattr(referrer, 'employee_code', None)
-
-    archived = ArchivedApplications.objects.create(
-        original_application_id=app.application_id,
-        application_code=app.application_code,
-        dmrc_reference_code=getattr(app, 'dmrc_reference_code', None),
-        student_name=student.full_name if student else '—',
-        student_email=(student.personal_email if student else '') or '',
-        student_mobile=getattr(student, 'mobile_number', None),
-        # Copied deliberately: the archive is the record of record, and it sits
-        # under the same access control as the live table -- SYS-ADMIN only.
-        student_aadhaar=getattr(student, 'aadhaar_number', None),
-        college_name=(academic.college_name if academic and academic.college_name else '—'),
-        branch_name=(academic.branch_name if academic else None),
-        grading_system=(academic.grading_system if academic else None),
-        current_score=(academic.current_score if academic else None),
-        department_name=getattr(app.department, 'department_name', None),
-        allotted_sub_department=getattr(
-            getattr(joining, 'allotted_sub_department', None), 'sub_department_name', None),
-        session_term=getattr(cycle, 'session_term', '—'),
-        application_year=getattr(cycle, 'application_year', archived_year),
-        duration_weeks=app.duration_weeks,
-        status=app.status,
-        is_waitlisted=bool(getattr(app, 'is_waitlisted', 0)),
-        is_no_show=bool(getattr(app, 'is_no_show', 0)),
-        is_employee_ward=bool(getattr(app, 'is_ward', 0)),
-        referral_source=app.referral_source,
-        referrer_name=referrer_name,
-        referrer_employee_code=referrer_code,
-        referrer_notification_email=getattr(app, 'referrer_notification_email', None),
-        allotted_date_of_joining=getattr(joining, 'allotted_date_of_joining', None),
-        actual_date_of_joining=getattr(joining, 'actual_date_of_joining', None),
-        dmra_session_date=getattr(joining, 'dmra_session_date', None),
-        dmra_attended=getattr(joining, 'dmra_attended', None),
-        date_of_completion=getattr(joining, 'date_of_completion', None),
-        rejection_category=getattr(app, 'rejection_category', None),
-        approval_reference_id=getattr(app, 'approval_reference_id', None),
-        is_admin_escalated=bool(getattr(app, 'is_admin_escalated', 0)),
-        is_resubmitted=bool(getattr(app, 'is_resubmitted', 0)),
-        doj_reschedules_count=app.doj_reschedules_count or 0,
-        archived_year=archived_year,
-        created_at=app.created_at or timezone.now(),
-    )
-
-    if academic:
-        ArchivedAcademicDetails.objects.create(
-            original_application_id=app.application_id,
-            university_name=academic.university_name,
-            college_name=academic.college_name or '—',
-            degree_program=academic.degree_program,
-            branch_name=academic.branch_name,
-            current_semester=academic.current_semester,
-            grading_system=academic.grading_system,
-            current_score=academic.current_score,
-        )
-
-    # --- DOCUMENTS ------------------------------------------------------
-    # File paths are copied; the FILES THEMSELVES ARE LEFT WHERE THEY ARE, in
-    # protected storage. Moving them would risk an archive pointing at files
-    # that a half-failed move had already relocated, and they are already
-    # outside the web root and unreachable by URL.
-    supplied_types = set()
-    for d in Documents.objects.filter(application=app).select_related('doc_type'):
-        type_name = getattr(d.doc_type, 'type_name', 'Unknown')
-        if d.is_current:
-            supplied_types.add(type_name)
-        ArchivedDocuments.objects.create(
-            original_application_id=app.application_id,
-            doc_type_name=type_name,
-            file_path=d.file_path,
-            version=d.version or 1,
-            is_manually_overridden=bool(getattr(d, 'is_manually_overridden', 0)),
-            verification_status=d.verification_status,
-            hr_remarks=getattr(d, 'hr_remarks', None),
-            uploaded_at=d.uploaded_at or timezone.now(),
-        )
-
-    # --- WHAT WAS ASKED FOR ---------------------------------------------
-    # Deliberately NOT falling back to the cycle's live configuration when an
-    # application has no snapshot. A college referral rejected before its form
-    # was ever filled was genuinely never asked for anything, and showing
-    # today's rules in its place would invent a history it never had.
-    for req in (ApplicationDocumentRequirements.objects
-                .filter(application=app)
-                .order_by('display_order', 'requirement_id')):
-        ArchivedDocumentRequirements.objects.create(
-            original_application_id=app.application_id,
-            application_code=app.application_code,
-            doc_type_name=req.doc_type_name,
-            allowed_extensions=req.allowed_extensions,
-            is_mandatory=bool(req.is_mandatory),
-            requires_consent=bool(req.requires_consent),
-            display_order=req.display_order or 0,
-            was_supplied=req.doc_type_name in supplied_types,
-        )
-
-    # --- TIMELINE -------------------------------------------------------
-    for h in (ApplicationStatusHistory.objects
-              .filter(application=app)
-              .select_related('changed_by_user')
-              .order_by('history_id')):
-        actor = h.changed_by_user
-        ArchivedStatusHistory.objects.create(
-            original_application_id=app.application_id,
-            application_code=app.application_code,
-            previous_status=h.previous_status,
-            new_status=h.new_status,
-            remarks=h.remarks,
-            actor_name=getattr(getattr(actor, 'employee', None), 'full_name', None),
-            actor_role=getattr(getattr(actor, 'role', None), 'role_name', None),
-            changed_at=h.changed_at,
-        )
-
-    return archived
 
 
 def record_application_event(application, actor_user, *, previous_status,
@@ -6646,6 +7252,23 @@ def serialize_audit_row(h):
         details = (f"Returned the corrected {payload.get('doc_type', 'document').title()} "
                    f"for {payload.get('application', 'this application')} to HR-OPS. "
                    f"Reason: {payload.get('reason', 'not recorded')}")
+    elif h.action_type == 'REPORT_EXPORTED':
+        # Who took data out of the portal, how much of it, and what they could
+        # see at the time. The tab and the filters matter as much as the count:
+        # 'exported 40 records' says little, 'exported the 40 Fix Joining
+        # records for Summer 2026' says who was in that file.
+        label = payload.get('moduleLabel') or payload.get('module') or 'records'
+        fmt = (payload.get('format') or '').upper()
+        count = payload.get('recordCount')
+        tab = payload.get('tab') or ''
+        filters = payload.get('filters') or 'No filters'
+        details = f"Exported {label}"
+        if tab and tab != label:
+            details += f" ({tab})"
+        details += f" to {fmt or 'file'}"
+        if count is not None:
+            details += f": {count} record{'' if count == 1 else 's'}"
+        details += f". Filters: {filters}."
     elif h.action_type == 'SIGNATURE_SUBMITTED':
         details = "Submitted a new signature for administrator approval."
     elif h.action_type == 'SIGNATURE_APPROVED':
@@ -6703,6 +7326,11 @@ def serialize_audit_row(h):
         # neither a configuration change nor anything an auditor would
         # recognise.
         target_str = "Archived Document Viewed"
+    elif h.target_entity_type == 'Export':
+        # Named as the event it is. The generic branch below would render this
+        # as "Export Configuration", which sounds like a settings change rather
+        # than data leaving the portal.
+        target_str = payload.get('moduleLabel') or 'Data Export'
     else:
         target_str = f"{h.target_entity_type} Configuration"
 
@@ -7769,39 +8397,80 @@ class UniversalExportAPIView(APIView):
             export_format = request.data.get('format')
             item_ids = request.data.get('ids', [])
 
-            if not module or not export_format or not item_ids:
-                return Response({"error": "Missing parameters or empty selection."}, status=status.HTTP_400_BAD_REQUEST)
+            if not module or not export_format:
+                return Response({"error": "Missing parameters or empty selection."},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            # The ARCHIVE export sends filters rather than a list of records,
+            # because the archive is paged and the visible list is one page of
+            # 25. Every other module still sends the ids on screen, and for
+            # those an empty selection is still nothing to export.
+            if module != 'archive' and not item_ids:
+                return Response({"error": "Missing parameters or empty selection."},
+                                status=status.HTTP_400_BAD_REQUEST)
 
             data = []
             headers = []
 
             # --- ARCHIVE EXPORT: WHAT YOU SEE -------------------------------
-            # The browser sends WHICH records, in WHAT ORDER, and WHICH columns
-            # are on screen. The VALUES are looked up here, from the archive.
+            # The browser sends the FILTERS that are in force, WHICH columns are
+            # on screen and the sort. The records and their values are resolved
+            # here, from the archive.
             #
-            # Trusting the browser's own values would be simpler, but a page
-            # left open for an hour, or any display glitch, would then be
-            # exported verbatim into a document DMRC may file as a record. The
-            # export matches the screen's shape; the figures come from storage.
+            # It used to send the list of tickets on screen. That worked while
+            # the browser held the whole cycle -- but the archive is paged now,
+            # so the visible list is 25 records, and an export built from it
+            # would have silently produced a 25-row file that only revealed
+            # itself as incomplete after somebody had sent it on. Paging is a
+            # drawing limit; an export covers everything the filters match, the
+            # same rule the two live queues already follow.
+            #
+            # Re-running the filters here rather than trusting values from the
+            # page also means a screen left open for an hour cannot be exported
+            # verbatim into a document DMRC may keep as a record.
             if module == 'archive':
                 columns = request.data.get('columns') or []
                 if not columns:
                     return Response({"error": "No columns specified for export."},
                                     status=status.HTTP_400_BAD_REQUEST)
 
-                by_code = {r.application_code: r for r in
-                           ArchivedApplications.objects.filter(application_code__in=item_ids)}
+                archive_filters = request.data.get('filters') or {}
+                term = archive_filters.get('term')
+                year = archive_filters.get('year')
+                if not (term and year):
+                    return Response(
+                        {"error": "An archived cycle must be selected before exporting."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+                records = archive_filter_queryset(
+                    ArchivedApplications.objects.filter(
+                        session_term=term, application_year=year),
+                    archive_filters)
+
+                # The administrator's sort carried into the file, resolved the
+                # same way the screen resolves it -- including blanks sinking to
+                # the bottom whichever way a date column is ordered.
+                sort_key = archive_filters.get('sortKey') or 'ticket'
+                if sort_key not in ARCHIVE_SORT_COLUMNS:
+                    sort_key = 'ticket'
+                column = ARCHIVE_SORT_COLUMNS[sort_key]
+                descending = (archive_filters.get('sortDir') or 'asc').lower() == 'desc'
+                if sort_key in ARCHIVE_SORT_NULLS_LAST:
+                    order = (F(column).desc(nulls_last=True) if descending
+                             else F(column).asc(nulls_last=True))
+                    records = records.order_by(order, 'application_code')
+                else:
+                    records = records.order_by(f"-{column}" if descending else column,
+                                               'application_code')
 
                 headers = [c.get('label', c.get('key', '')) for c in columns]
                 data = []
-                # item_ids arrives in the order shown on screen, so any sort the
-                # administrator applied is preserved. A dictionary lookup keeps
-                # that order; a database filter would silently reorder them.
-                for code in item_ids:
-                    rec = by_code.get(code)
-                    if rec is None:
-                        continue
-                    view = serialize_archived_application(rec)
+                # serialize_archived_row, not the drawer serialiser: the export
+                # carries the columns the TABLE shows, and the drawer version
+                # would run four extra queries per record to build documents and
+                # a timeline that no column displays.
+                for rec in records.iterator(chunk_size=500):
+                    view = serialize_archived_row(rec)
                     row = []
                     for col in columns:
                         key = col.get('key')
@@ -7832,26 +8501,67 @@ class UniversalExportAPIView(APIView):
                            .filter(application_code__in=item_ids)}
                 ordered = [indexed[code] for code in item_ids if code in indexed]
 
+                # The joining-date column is HEADED as the screen heads it --
+                # 'Requested DOJ', 'Allotted DOJ', 'Actual DOJ' or the generic
+                # 'Date of Joining' -- and its values follow the same status rule
+                # the dashboard uses. The two were previously out of step: the
+                # file worked its own actual-then-allotted-then-requested
+                # fallback, so a rejected candidate who had once been allotted a
+                # date showed one date on screen and a different one in the file.
+                #
+                # The label comes from the browser because it is a LABEL: taking
+                # it from the screen is what guarantees the file cannot disagree
+                # with it. It is checked against the four permitted headings, so
+                # nothing arbitrary can be written into a document DMRC files.
+                context = request.data.get('context') or {}
+                doj_header = context.get('dojHeader')
+                if doj_header not in ('Date of Joining', 'Requested DOJ',
+                                      'Allotted DOJ', 'Actual DOJ'):
+                    doj_header = 'Date of Joining'
+
                 if module == 'college':
                     headers = ['Ticket ID', 'Candidate Name', 'College / Institution',
                                'University', 'Course', 'Branch', 'Department',
                                'Status', 'Date of Joining', 'Cycle']
                 else:
                     headers = ['Ticket ID', 'Candidate Name', 'Department', 'Status',
-                               'Ward', 'Date of Joining', 'Referrer', 'Referrer Type',
-                               'Cycle']
+                               'Ward', 'Submitted', doj_header, 'Referrer',
+                               'Referrer Type', 'Cycle']
+
+                # THE SAME STATUS RULE THE DASHBOARD USES (getDisplayDojValue).
+                # Before approval the only committed date is the one requested;
+                # once a date is allotted that is the operative one; once the
+                # candidate has arrived, the date they actually arrived on.
+                DOJ_ALLOTTED_STATUSES = ('Approved', 'Scheduled', 'Pending Offer Letter',
+                                         'Fix Joining', 'Offer Ready',
+                                         'Pending Offer Re-Approval', 'Pending Arrival',
+                                         'Ready for Merge')
+                DOJ_ACTUAL_STATUSES = ('Joined', 'Fix Clearance', 'Pending Certificate',
+                                       'Pending Dispatch', 'Completed')
 
                 for app in ordered:
                     joining = JoiningDetails.objects.filter(application=app).first()
-                    if joining and getattr(joining, 'actual_date_of_joining', None):
-                        doj = safe_extract_time(joining, 'actual_date_of_joining', date_only=True)
-                    elif joining and getattr(joining, 'allotted_date_of_joining', None):
-                        doj = safe_extract_time(joining, 'allotted_date_of_joining', date_only=True)
-                    elif joining and getattr(joining, 'requested_doj', None):
-                        doj = safe_extract_time(joining, 'requested_doj', date_only=True)
+
+                    if app.status in DOJ_ACTUAL_STATUSES:
+                        field = 'actual_date_of_joining'
+                    elif app.status in DOJ_ALLOTTED_STATUSES:
+                        field = 'allotted_date_of_joining'
                     else:
+                        field = 'requested_doj'
+
+                    doj = ""
+                    if joining and getattr(joining, field, None):
+                        doj = safe_extract_time(joining, field, date_only=True)
+                    elif joining and field == 'allotted_date_of_joining' and getattr(joining, 'requested_doj', None):
+                        # A date is allotted moments after approval. Until then
+                        # the requested date stands in, exactly as the server
+                        # does when it builds the queue.
+                        doj = safe_extract_time(joining, 'requested_doj', date_only=True)
+                    if not doj:
                         doj = "Pending"
-                        
+
+                    submitted = safe_extract_time(app, 'created_at', date_only=True) or "—"
+
                     student_salutation = getattr(app.student, 'salutation', '')
                     student_name = getattr(app.student, 'full_name', 'Unknown')
                     full_candidate_name = f"{student_salutation} {student_name}".strip() if student_salutation else student_name
@@ -7889,6 +8599,7 @@ class UniversalExportAPIView(APIView):
                             # ARCHIVE's name for the same fact -- using it here
                             # raised AttributeError and failed the whole export.
                             'Yes' if app.is_ward else 'No',
+                            submitted,
                             doj,
                             getattr(referrer, 'full_name', '') or "—",
                             app.referral_source,
@@ -7933,6 +8644,48 @@ class UniversalExportAPIView(APIView):
 
             if not data:
                 return Response({"error": "No matching records found in the database."}, status=status.HTTP_404_NOT_FOUND)
+
+            # --- THE EXPORT IS RECORDED -------------------------------------
+            #
+            # Every export of every module, including the audit ledger itself.
+            # Exporting the ledger writes a line into the ledger, which is the
+            # correct behaviour: taking a copy of the record of who did what is
+            # itself something a reviewer needs to be able to see.
+            #
+            # Written HERE, after the rows have been assembled and before the
+            # file is handed over, so the count in the ledger is the number of
+            # records the file actually contains. Recording it earlier would log
+            # exports that then failed to build.
+            #
+            # _audit never raises: a ledger failure must not cost the officer
+            # their file.
+            export_context = request.data.get('context') or {}
+            module_label = {
+                'queue': 'Verification Queue',
+                'college': 'College Referrals',
+                'archive': 'Archives',
+                'audit': 'Audit Ledger',
+            }.get(module, module.title())
+
+            _audit(
+                request.identity.user,
+                'REPORT_EXPORTED',
+                'Export',
+                # This action is about a SET of records rather than one entity,
+                # so there is no row to point at. The column cannot be null, and
+                # the useful identifiers are in the payload below.
+                0,
+                new_value={
+                    'module': module,
+                    'moduleLabel': module_label,
+                    'format': export_format,
+                    'recordCount': len(data),
+                    'tab': export_context.get('tab') or '',
+                    'filters': export_context.get('filters') or 'No filters',
+                    'sort': export_context.get('sort') or '',
+                    'columns': headers,
+                }
+            )
 
             if export_format == 'excel':
                 df = pd.DataFrame(data, columns=headers)

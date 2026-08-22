@@ -1,0 +1,106 @@
+.
+./.DS_Store
+./Back End
+./Back End/migrate_protected_documents.py
+./Back End/portal
+./Back End/portal/migrations
+./Back End/portal/migrations/0003_remove_dead_columns.py
+./Back End/portal/migrations/__init__.py
+./Back End/portal/migrations/0002_archive_rebuild.py
+./Back End/portal/migrations/0001_initial.py
+./Back End/portal/.DS_Store
+./Back End/portal/identity
+./Back End/portal/identity/intranet.py
+./Back End/portal/identity/__init__.py
+./Back End/portal/identity/dev.py
+./Back End/portal/identity/base.py
+./Back End/portal/models.py
+./Back End/portal/__init__.py
+./Back End/portal/apps.py
+./Back End/portal/admin.py
+./Back End/portal/permissions.py
+./Back End/portal/documents
+./Back End/portal/documents/.DS_Store
+./Back End/portal/documents/certificate.py
+./Back End/portal/documents/offer_letter.py
+./Back End/portal/documents/__init__.py
+./Back End/portal/documents/formatting.py
+./Back End/portal/documents/stamp.py
+./Back End/portal/documents/assets
+./Back End/portal/documents/assets/header_hindi_line2.png
+./Back End/portal/documents/assets/header_hindi_line1.png
+./Back End/portal/documents/assets/.DS_Store
+./Back End/portal/documents/assets/dmrc_logo.png
+./Back End/portal/tests.py
+./Back End/portal/urls.py
+./Back End/portal/views.py
+./Back End/.DS_Store
+./Back End/requirements.txt
+./Back End/preview_offer_letter.py
+./Back End/signatures
+./Back End/signatures/active
+./Back End/signatures/active/2.png
+./Back End/signatures/pending
+./Back End/run_sql.py
+./Back End/protected_documents
+./Back End/generated_documents
+./Back End/README.md
+./Back End/preview_completion_certificate.py
+./Back End/logs
+./Back End/logs/portal.log
+./Back End/dmrc_core
+./Back End/dmrc_core/asgi.py
+./Back End/dmrc_core/__init__.py
+./Back End/dmrc_core/settings.py
+./Back End/dmrc_core/urls.py
+./Back End/dmrc_core/wsgi.py
+./Back End/.env
+./Back End/manage.py
+./Back End/.env.example
+./Back End/.vscode
+./Back End/.vscode/settings.json
+./Back End/media
+./Back End/media/.DS_Store
+./Back End/media/draft_documents
+./Front End
+./Front End/.DS_Store
+./Front End/Phase-2-HR-Dashboard
+./Front End/Phase-2-HR-Dashboard/hr_styles.css
+./Front End/Phase-2-HR-Dashboard/.DS_Store
+./Front End/Phase-2-HR-Dashboard/dmrc-logo.png
+./Front End/Phase-2-HR-Dashboard/hr_dashboard.html
+./Front End/Phase-2-HR-Dashboard/hr_app.js
+./Front End/Phase-1-User-Portal
+./Front End/Phase-1-User-Portal/index.html
+./Front End/Phase-1-User-Portal/.DS_Store
+./Front End/Phase-1-User-Portal/dmrc-logo.png
+./Front End/Phase-1-User-Portal/styles.css
+./Front End/Phase-1-User-Portal/app.js
+./Docs
+./Docs/.DS_Store
+./Docs/API_Endpoint_Reference.md
+./Docs/DMRC_Handover_Brief.pdf
+./Docs/DMRC_Handover_Brief_FINAL.md
+./project_map.txt
+./DB
+./DB/.DS_Store
+./DB/Intern_Portal.sql
+./DB/dev_only
+./DB/dev_only/factory_reset.sql
+./DB/dev_only/seed_dev_data.sql
+./DB/dev_only/README.txt
+./DB/dev_only/reset_application_data.sql
+./DB/dev_only/fix_employee_names.sql
+./DB/ER Diagram.pdf
+./DB/history
+./DB/history/migration_003_application_drafts.sql
+./DB/history/migration_004_dynamic_documents.sql
+./DB/history/migration_03_archive_completeness.sql
+./DB/history/migration_02_per_cycle_document_config.sql
+./DB/history/migration_002_referrer_bounce_back.sql
+./DB/history/migration_01_college_referrals.sql
+./DB/history/README.txt
+./DB/history/migration_05_offer_letters.sql
+./DB/history/migration_04_sub_departments.sql
+./.vscode
+./.vscode/settings.json

@@ -16,6 +16,7 @@ env/
 
 # Editor / IDE
 .vscode/
+.idea/
 
 # 🛑 SENSITIVE USER DATA & GENERATED FILES (DO NOT PUSH) 🛑
 Back End/protected_documents/
@@ -24,3 +25,18 @@ Back End/media/
 Back End/signatures/
 Front End/Phase-1-User-Portal/Dummy Docs/
 Front End/Phase-2-HR-Dashboard/Dummy Docs/
+
+# Superseded and rejected files (signatures, replaced documents).
+# Outside MEDIA_ROOT, never served, but still real user data.
+Back End/quarantine/
+
+# Application logs. Created automatically by settings.py; contents can include
+# request paths and error detail.
+Back End/logs/
+
+# Output of `manage.py collectstatic`. Regenerated on deployment, never edited.
+Back End/staticfiles/
+
+# Personal meeting notes -- not part of the handover package.
+Meeting_Crib_Sheet.md
+*Crib*

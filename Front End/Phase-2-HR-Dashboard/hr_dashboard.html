@@ -21,6 +21,9 @@
          backdrop lands UNDER the first dialog and the confirmation cannot be
          clicked even once it is visible. */
       .modal-backdrop.show ~ .modal-backdrop.show { z-index: 1075; }
+
+      /* The archive's calendar states and its legend live in hr_styles.css,
+         section 8, beside .ahr-approved-date which they extend. */
     </style>
 </head>
 <body x-data="hrCommandCenter">
@@ -136,7 +139,19 @@
             <!-- FILTER DRAWER -->
             <div class="filter-drawer" x-show="showFilterDrawer" style="display: none;" x-transition>
                 <div class="row g-3 align-items-end mb-3">
-                    <div class="col-md-3"><label class="form-label small fw-bold">Internship Cycle</label><select class="form-select form-select-sm" x-model="filters.cycle"><option value="">All Cycles</option><option value="Summer 2026">Summer 2026</option><option value="Winter 2026">Winter 2026</option></select></div>
+                    <div class="col-md-3"><label class="form-label small fw-bold">Internship Cycle</label>
+                        <!-- The live list. These were two literal strings, so the
+                             filter would have gone on offering Summer and Winter
+                             2026 for ever and would never have offered a cycle
+                             added later. Archived cycles drop out on their own:
+                             archiving deactivates a cycle and this list carries
+                             only active ones. -->
+                        <select class="form-select form-select-sm" x-model="filters.cycle">
+                            <option value="">All Cycles</option>
+                            <template x-for="cyc in queueCycleOptions" :key="cyc">
+                                <option :value="cyc" x-text="cyc"></option>
+                            </template>
+                        </select></div>
                     <div class="col-md-3"><label class="form-label small fw-bold">Department</label><!-- The live list. These were four hardcoded literals in mixed
                              case, so filtering by 'Civil' matched nothing against a
                              stored 'CIVIL', and half the departments were absent
@@ -148,46 +163,73 @@
                             </template>
                         </select></div>
                     <div class="col-md-3"><label class="form-label small fw-bold">Sub-Department</label>
+                        <!-- This read the administrator configuration, which only
+                             a SYS-ADMIN may fetch, so for HR-OPS and HR-APP -- the
+                             two roles who work this queue -- the dropdown was
+                             simply empty and the filter could not be used. It now
+                             reads the per-cycle list every role receives. -->
                         <select class="form-select form-select-sm text-uppercase" x-model="filters.subDepartment">
                             <option value="">All Sub-Departments</option>
-                            <template x-for="sub in dbSubDepartments.filter(d => d.isActive)" :key="sub.name">
-                                <option :value="sub.name" x-text="sub.name"></option>
+                            <template x-for="sub in queueSubDepartmentOptions" :key="sub">
+                                <option :value="sub" x-text="sub"></option>
                             </template>
                         </select>
                     </div>
-                    <div class="col-md-3"><label class="form-label small fw-bold">Target DOJ</label><select class="form-select form-select-sm" x-model="filters.specificDoj"><option value="">All Dates</option><template x-for="date in availableFilterDojDates" :key="date"><option :value="date" x-text="formatDate(date)"></option></template></select></div>
+                    <div class="col-md-3"><label class="form-label small fw-bold">Target DOJ</label>
+                        <!-- A calendar rather than a list of dates, and matched
+                             against the date that matters for each record: the
+                             requested date before approval, the allotted date
+                             once one is set, the actual date once the candidate
+                             has arrived. Approved dates are highlighted; any
+                             date can be picked, because an intern who reported
+                             late has an actual date that was never on the
+                             published calendar. -->
+                        <div class="input-group input-group-sm">
+                            <input type="text" id="queueDojFilter" class="form-control form-control-sm bg-white"
+                                   placeholder="All Dates"
+                                   x-init="$nextTick(() => initQueueDojFilterCalendar($el))">
+                            <button class="btn btn-outline-secondary" type="button" title="Clear this date"
+                                    x-show="filters.specificDoj" @click="clearQueueDojFilter()">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        </div>
+                    </div>
                 </div>
                 <div class="row g-3 align-items-end mb-3 border-top pt-3">
                     <div class="col-md-3"><label class="form-label small fw-bold d-block mb-1">Final Evaluation</label><select class="form-select form-select-sm" x-model="filters.evaluationResult"><option value="">Any Result</option><option value="Satisfactory">Satisfactory</option><option value="Unsatisfactory">Unsatisfactory</option></select></div>
-                    <div class="col-md-3"><label class="form-label small fw-bold d-block mb-1">Resubmission</label><select class="form-select form-select-sm" x-model="filters.resubmissionType"><option value="">All Applications</option><option value="Document">Document Corrections</option><option value="DOJ">DOJ Updates (No-Shows)</option></select></div>
-                    <div class="col-md-3"><label class="form-label small fw-bold d-block mb-1">DMRC Academy Status</label>
-                        <select class="form-select form-select-sm" x-model="filters.dmraStatus">
-                            <option value="">All Statuses</option>
-                            <option value="Awaiting Schedule">Awaiting Schedule</option>
-                            <option value="Scheduled">Session Scheduled</option>
-                            <option value="Attended">Attended</option>
-                            <option value="Missed">Missed (Exemption Req.)</option>
-                        </select>
-                    </div>
-                    <div class="col-md-3"><label class="form-label small fw-bold d-block mb-1">Sort By</label>
+                    <div class="col-md-6"><label class="form-label small fw-bold d-block mb-1">Sort By</label>
                         <select class="form-select form-select-sm" x-model="sortBy">
                             <option value="submission_asc">Submission (Oldest)</option>
                             <option value="submission_desc">Submission (Newest)</option>
                             <option value="resubmission_desc">Resubmission (Newest)</option>
-                            <option value="doj_asc">Date of Joining</option>
+                            <option value="resubmission_asc">Resubmission (Oldest)</option>
+                            <option value="doj_asc">Date of Joining (Earliest)</option>
+                            <option value="doj_desc">Date of Joining (Latest)</option>
                             <option value="completion_asc">Completion Date (Soonest)</option>
                             <option value="completion_desc">Completion Date (Latest)</option>
-                            <option value="ticket_asc">Ticket ID (A-Z)</option>
-                            <option value="ticket_desc">Ticket ID (Z-A)</option>
+                            <!-- Ticket numbers restart at 001 in every cycle, so
+                                 ordering a mixed list by ticket interleaves
+                                 unrelated candidates. Available once a cycle is
+                                 chosen. -->
+                            <option value="ticket_asc" :disabled="!filters.cycle">Ticket ID (A-Z)</option>
+                            <option value="ticket_desc" :disabled="!filters.cycle">Ticket ID (Z-A)</option>
                         </select>
+                        <span class="small text-muted" x-show="!filters.cycle">Select a cycle to sort by Ticket ID.</span>
                     </div>
                 </div>
                 <div class="row g-3 align-items-center border-top pt-3">
-                    <div class="col-md-11 d-flex gap-4 pt-1">
+                    <div class="col-md-11 d-flex gap-4 pt-1 flex-wrap">
                         <div class="form-check"><input class="form-check-input" type="checkbox" id="wlCheck" x-model="filters.isWaitlisted"><label class="form-check-label small" for="wlCheck">Waitlisted</label></div>
                         <div class="form-check"><input class="form-check-input" type="checkbox" id="wardCheck" x-model="filters.isWard"><label class="form-check-label small" for="wardCheck">Wards</label></div>
-                        <div class="form-check"><input class="form-check-input border-danger" type="checkbox" id="criticalCheck" x-model="filters.isCritical"><label class="form-check-label small text-danger fw-bold" for="criticalCheck">Lifelines Exhausted</label></div>
-                        <div class="form-check"><input class="form-check-input border-warning" type="checkbox" id="overrideCheck" x-model="filters.hasCustomOverride"><label class="form-check-label small text-warning fw-bold" for="overrideCheck">Has Custom Override</label></div>
+                        <!-- Returned to the referrer to fix documents, or to
+                             choose a new joining date. Ticking both shows
+                             everything that has been returned for either
+                             reason. -->
+                        <div class="form-check"><input class="form-check-input border-info" type="checkbox" id="corrCheck" x-model="filters.correctionBounce"><label class="form-check-label small" for="corrCheck">Returned: Corrections</label></div>
+                        <div class="form-check"><input class="form-check-input border-info" type="checkbox" id="dojBounceCheck" x-model="filters.dojBounce"><label class="form-check-label small" for="dojBounceCheck">Returned: DOJ Update</label></div>
+                        <!-- Has spent the one reschedule a candidate gets. A date
+                             changed by an administrator does not count. -->
+                        <div class="form-check"><input class="form-check-input border-danger" type="checkbox" id="rescheduleCheck" x-model="filters.dojRescheduleUsed"><label class="form-check-label small text-danger fw-bold" for="rescheduleCheck">DOJ Reschedule Used</label></div>
                     </div>
                     <div class="col-md-1 text-end pt-1"><button class="btn btn-sm btn-link text-decoration-none text-muted p-0" @click="clearFilters()">Clear</button></div>
                 </div>
@@ -214,6 +256,12 @@
             </template>
             <!-- DATA TABLE -->
             <div class="card border-0 shadow-sm rounded-3 overflow-hidden">
+                <!-- How many records the current filters matched, and which of
+                     them are on screen. Shown even on a single page, because the
+                     total is the useful number. -->
+                <div class="px-3 py-2 border-bottom bg-light small text-muted" x-show="processedQueue.length > 0">
+                    Showing <span class="fw-bold" x-text="queueRangeLabel"></span> applications
+                </div>
                 <div class="table-responsive">
                     <table class="table table-hover mb-0 align-middle">
                         <thead class="table-light">
@@ -240,7 +288,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            <template x-for="app in processedQueue" :key="app.id">
+                            <template x-for="app in pagedQueue" :key="app.id">
                                 <tr>
                                     <template x-if="['Pending', 'Resubmissions'].includes(activeTab)">
                                         <td class="ps-4"><input class="form-check-input" type="checkbox" :value="app.ticket" x-model="selectedRows"></td>
@@ -318,6 +366,30 @@
                         </tbody>
                     </table>
                 </div>
+
+                <!-- PAGE CONTROLS.
+                     The count reads the FULL filtered list, so it always says
+                     how many records the current filters actually matched --
+                     not how many happen to be drawn. Hidden entirely when
+                     everything fits on one page. -->
+                <div class="d-flex justify-content-center align-items-center px-3 py-2 border-top bg-light"
+                     x-show="queuePageCount > 1">
+                    <nav aria-label="Verification Queue pages">
+                        <ul class="pagination pagination-sm mb-0">
+                            <li class="page-item" :class="queueCurrentPage === 1 ? 'disabled' : ''">
+                                <button class="page-link" @click="goToQueuePage(queueCurrentPage - 1)" :disabled="queueCurrentPage === 1">Previous</button>
+                            </li>
+                            <template x-for="n in queuePageNumbers" :key="n">
+                                <li class="page-item" :class="n === queueCurrentPage ? 'active' : ''">
+                                    <button class="page-link" @click="goToQueuePage(n)" x-text="n"></button>
+                                </li>
+                            </template>
+                            <li class="page-item" :class="queueCurrentPage === queuePageCount ? 'disabled' : ''">
+                                <button class="page-link" @click="goToQueuePage(queueCurrentPage + 1)" :disabled="queueCurrentPage === queuePageCount">Next</button>
+                            </li>
+                        </ul>
+                    </nav>
+                </div>
             </div>
         </div>
 
@@ -385,6 +457,11 @@
 
             <!-- Table for Institutional Referrals -->
             <div class="card border-0 shadow-sm rounded-3 overflow-hidden">
+                <!-- Which records are on screen, out of everything this tab and
+                     search matched. -->
+                <div class="px-3 py-2 border-bottom bg-light small text-muted" x-show="filteredCollegeReferrals.length > 0">
+                    Showing <span class="fw-bold" x-text="referralRangeLabel"></span> records
+                </div>
                 <div class="table-responsive">
                     <table class="table table-hover mb-0 align-middle">
                         <thead class="table-light">
@@ -398,7 +475,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            <template x-for="app in filteredCollegeReferrals" :key="app.id">
+                            <template x-for="app in pagedCollegeReferrals" :key="app.id">
                                 <tr>
                                     <td class="ps-4">
                                         <span class="fw-bold" style="font-size: 0.9rem;" x-text="app.ticket"></span>
@@ -424,6 +501,26 @@
                             </tr>
                         </tbody>
                     </table>
+                </div>
+
+                <!-- PAGE CONTROLS. Same behaviour as the Verification Queue. -->
+                <div class="d-flex justify-content-center align-items-center px-3 py-2 border-top bg-light"
+                     x-show="referralPageCount > 1">
+                    <nav aria-label="College Referral pages">
+                        <ul class="pagination pagination-sm mb-0">
+                            <li class="page-item" :class="referralCurrentPage === 1 ? 'disabled' : ''">
+                                <button class="page-link" @click="goToReferralPage(referralCurrentPage - 1)" :disabled="referralCurrentPage === 1">Previous</button>
+                            </li>
+                            <template x-for="n in referralPageNumbers" :key="n">
+                                <li class="page-item" :class="n === referralCurrentPage ? 'active' : ''">
+                                    <button class="page-link" @click="goToReferralPage(n)" x-text="n"></button>
+                                </li>
+                            </template>
+                            <li class="page-item" :class="referralCurrentPage === referralPageCount ? 'disabled' : ''">
+                                <button class="page-link" @click="goToReferralPage(referralCurrentPage + 1)" :disabled="referralCurrentPage === referralPageCount">Next</button>
+                            </li>
+                        </ul>
+                    </nav>
                 </div>
             </div>
         </div>
@@ -612,7 +709,7 @@
                                                         <span class="small text-muted text-uppercase" x-text="app.name"></span>
                                                     </td>
                                                     <td class="text-uppercase" x-text="app.department"></td>
-                                                    <td><span class="small text-muted d-block">Est. End Date:</span><span class="fw-medium" x-text="calculateCompletionDate(app.actualDoj, app.internship)"></span></td>
+                                                    <td><span class="small text-muted d-block">End Date:</span><span class="fw-medium" x-text="completionDateDisplay(app)"></span></td>
                                                     <td class="text-end pe-4">
                                                         <button class="btn btn-sm btn-outline-primary" @click="openApplicantDrawer(app.ticket)">Review <i class="bi bi-chevron-right"></i></button>
                                                     </td>
@@ -629,7 +726,7 @@
                                                         <span class="small text-muted text-uppercase" x-text="app.name"></span>
                                                     </td>
                                                     <td class="text-uppercase" x-text="app.department"></td>
-                                                    <td><span class="small text-muted d-block">Est. End Date:</span><span class="fw-medium" x-text="calculateCompletionDate(app.actualDoj, app.internship)"></span></td>
+                                                    <td><span class="small text-muted d-block">End Date:</span><span class="fw-medium" x-text="completionDateDisplay(app)"></span></td>
                                                     <td class="text-end pe-4">
                                                         <button class="btn btn-sm btn-success fw-bold" @click="openApplicantDrawer(app.ticket)">Draft & Dispatch <i class="bi bi-send-fill ms-1"></i></button>
                                                     </td>
@@ -1067,7 +1164,7 @@
                     <div class="row g-3 align-items-end mb-3">
                         <div class="col-md-3">
                             <label class="form-label small fw-bold text-uppercase">Select Year</label>
-                            <select class="form-select form-select-sm fw-bold border-secondary border-opacity-50" x-model="archiveYear" @change="archiveCycle = ''">
+                            <select class="form-select form-select-sm fw-bold border-secondary border-opacity-50" x-model="archiveYear">
                                 <option value="">Choose Year...</option>
                                 <template x-for="y in availableArchiveYears" :key="y"><option :value="y" x-text="y"></option></template>
                             </select>
@@ -1083,80 +1180,185 @@
                             <label class="form-label small fw-bold text-uppercase">Search Archives</label>
                             <div class="input-group input-group-sm">
                                 <span class="input-group-text bg-light border-secondary border-opacity-50"><i class="bi bi-search text-muted"></i></span>
-                                <input type="text" class="form-control border-start-0 ps-0 text-uppercase border-secondary border-opacity-50" placeholder="Search ticket, name, department, sub-department, college or referrer" x-model="archiveSearch">
+                                <!-- Searches the WHOLE cycle, not the page on screen. Department
+                                     and sub-department are deliberately not searched: both have
+                                     their own dropdown, and matching them here as well meant a
+                                     typed search quietly returned a different set. -->
+                                <input type="text" class="form-control border-start-0 ps-0 text-uppercase border-secondary border-opacity-50"
+                                       placeholder="Search ticket, name, college or referrer"
+                                       x-model="archiveSearch" @input="onArchiveSearchInput()" :disabled="!archiveCycle">
                             </div>
                         </div>
                         <div class="col-md-2 text-end">
-                            <button class="btn btn-sm btn-outline-secondary d-flex align-items-center justify-content-center gap-2 w-100 fw-bold border-secondary border-opacity-50" @click="showFilterDrawer = !showFilterDrawer" :disabled="!archiveCycle">
+                            <button class="btn btn-sm btn-outline-secondary d-flex align-items-center justify-content-center gap-2 w-100 fw-bold border-secondary border-opacity-50" @click="showArchiveFilterDrawer = !showArchiveFilterDrawer" :disabled="!archiveCycle">
                                 <i class="bi bi-funnel"></i> Filters
+                                <span class="badge bg-secondary rounded-pill" x-show="archiveActiveFilterCount > 0" x-text="archiveActiveFilterCount"></span>
                             </button>
                         </div>
                     </div>
 
-                    <!-- ARCHIVE FILTER DRAWER -->
-                    <div class="filter-drawer mt-3 mb-0 border-secondary border-opacity-25" x-show="showFilterDrawer" style="display: none;" x-transition>
+                    <!-- ====================================================================
+                         ARCHIVE FILTER DRAWER
+
+                         Built FOR THE ARCHIVE, not copied from the Verification Queue.
+                         The queue's filters describe where an application is STUCK --
+                         returned for corrections, awaiting a DOJ update, which stage it
+                         is sitting in. An archived record is not stuck anywhere; it is
+                         finished. Copying those controls here would have produced a panel
+                         of switches that either matched everything or meant something
+                         subtly different from their labels.
+
+                         Its own show/hide flag. This shared showFilterDrawer with the
+                         Verification Queue, so opening filters on one screen left the
+                         panel hanging open on the other.
+                         ==================================================================== -->
+                    <div class="filter-drawer mt-3 mb-0 border-secondary border-opacity-25" x-show="showArchiveFilterDrawer" style="display: none;" x-transition>
                         <div class="row g-3 align-items-end mb-3">
+
                             <div class="col-md-3"><label class="form-label small fw-bold">Outcome</label>
-                                <select class="form-select form-select-sm" x-model="archiveFilters.outcome">
+                                <select class="form-select form-select-sm" x-model="archiveFilters.outcome" @change="onArchiveFilterChange()">
                                     <option value="">All Outcomes</option>
                                     <option value="Completed">Completed</option>
                                     <option value="Rejected">Rejected</option>
                                 </select>
                             </div>
+
+                            <!-- HOW FAR THEY GOT. 'Rejected' covers a candidate turned away
+                                 in week one over a bad photograph AND somebody who served
+                                 the full internship and failed their assessment. Both are
+                                 filed identically, and they are not the same record. -->
+                            <div class="col-md-3"><label class="form-label small fw-bold">How Far They Got</label>
+                                <select class="form-select form-select-sm" x-model="archiveFilters.stage" @change="onArchiveFilterChange()">
+                                    <option value="">Any Stage</option>
+                                    <template x-for="s in archiveStageOptions" :key="s.value">
+                                        <option :value="s.value" x-text="s.label"></option>
+                                    </template>
+                                </select>
+                            </div>
+
                             <div class="col-md-3"><label class="form-label small fw-bold">Department</label>
-                                <!-- Only departments that appear in THIS archived cycle.
-                                     Offering today's live list would show options matching
-                                     nothing, since the structure changes over the years. -->
-                                <select class="form-select form-select-sm text-uppercase" x-model="archiveFilters.department">
+                                <!-- Only departments that appear in THIS archived cycle, and
+                                     sent by the server. Derived in the browser these would
+                                     reflect one page of twenty-five rows. -->
+                                <select class="form-select form-select-sm text-uppercase" x-model="archiveFilters.department" @change="onArchiveFilterChange()">
                                     <option value="">All Departments</option>
-                                    <template x-for="d in archiveDepartmentOptions" :key="d"><option :value="d" x-text="d"></option></template>
+                                    <template x-for="d in archiveOptions.departments" :key="d"><option :value="d" x-text="d"></option></template>
                                 </select>
                             </div>
+
                             <div class="col-md-3"><label class="form-label small fw-bold">Sub-Department</label>
-                                <select class="form-select form-select-sm text-uppercase" x-model="archiveFilters.subDepartment">
+                                <select class="form-select form-select-sm text-uppercase" x-model="archiveFilters.subDepartment" @change="onArchiveFilterChange()">
                                     <option value="">All Units</option>
-                                    <template x-for="sd in archiveSubDeptOptions" :key="sd"><option :value="sd" x-text="sd"></option></template>
+                                    <template x-for="sd in archiveOptions.subDepartments" :key="sd"><option :value="sd" x-text="sd"></option></template>
                                 </select>
                             </div>
-                            <div class="col-md-3"><label class="form-label small fw-bold">Rejection Reason</label>
-                                <select class="form-select form-select-sm" x-model="archiveFilters.rejectionCategory">
-                                    <option value="">Any Reason</option>
-                                    <option value="Invalid Document">Invalid Document</option>
-                                    <option value="No Show">No Show</option>
-                                    <option value="Withdrawn">Withdrawn</option>
-                                    <option value="Other">Other</option>
-                                </select>
-                            </div>
+
                             <div class="col-md-3"><label class="form-label small fw-bold">Source</label>
-                                <select class="form-select form-select-sm" x-model="archiveFilters.source">
+                                <select class="form-select form-select-sm" x-model="archiveFilters.source" @change="onArchiveFilterChange()">
                                     <option value="">All Sources</option>
                                     <option value="Employee">Employee Referral</option>
                                     <option value="Institutional">College Referral</option>
                                 </select>
                             </div>
+
+                            <div class="col-md-3"><label class="form-label small fw-bold">Rejection Reason</label>
+                                <!-- The reasons actually recorded in this cycle. -->
+                                <select class="form-select form-select-sm" x-model="archiveFilters.rejectionCategory" @change="onArchiveFilterChange()">
+                                    <option value="">Any Reason</option>
+                                    <template x-for="r in archiveOptions.rejectionCategories" :key="r"><option :value="r" x-text="r"></option></template>
+                                </select>
+                            </div>
+
+                            <div class="col-md-3"><label class="form-label small fw-bold">Final Evaluation</label>
+                                <select class="form-select form-select-sm" x-model="archiveFilters.evaluationResult" @change="onArchiveFilterChange()">
+                                    <option value="">Any Result</option>
+                                    <option value="Satisfactory">Satisfactory</option>
+                                    <option value="Unsatisfactory">Unsatisfactory</option>
+                                </select>
+                            </div>
+
+                            <!-- 'Pending' is a real and useful answer: the certificate was
+                                 issued but the email was never actually sent. -->
+                            <div class="col-md-3"><label class="form-label small fw-bold">Certificate Dispatch</label>
+                                <select class="form-select form-select-sm" x-model="archiveFilters.emailStatus" @change="onArchiveFilterChange()">
+                                    <option value="">Any Status</option>
+                                    <option value="Sent">Sent</option>
+                                    <option value="Pending">Pending</option>
+                                    <option value="Failed">Failed</option>
+                                </select>
+                            </div>
+
+                            <div class="col-md-2"><label class="form-label small fw-bold">Duration</label>
+                                <select class="form-select form-select-sm" x-model="archiveFilters.duration" @change="onArchiveFilterChange()">
+                                    <option value="">Any Length</option>
+                                    <template x-for="w in archiveOptions.durations" :key="w"><option :value="w" x-text="w + ' Weeks'"></option></template>
+                                </select>
+                            </div>
+
+                            <!-- DATE OF JOINING: one date, from the calendar.
+                                 Joining dates cluster on a handful of approved intake
+                                 dates, so 'the batch that joined on 14 July' is the real
+                                 question. Three kinds of day are marked -- see the legend
+                                 below. Every date stays selectable, including unapproved
+                                 and past ones. -->
+                            <div class="col-md-3"><label class="form-label small fw-bold">Date of Joining</label>
+                                <div class="input-group input-group-sm">
+                                    <input type="text" id="archiveDojFilter" class="form-control form-control-sm" placeholder="Any date">
+                                    <button class="btn btn-outline-secondary" type="button" @click="clearArchiveDojFilter(); onArchiveFilterChange();" title="Clear date">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- COMPLETION: a RANGE, because these do not cluster. Each is
+                                 that person's joining date plus their own duration, and
+                                 with 4, 6 and 8-week internships mixed together a single
+                                 date would usually match one or two people. -->
+                            <div class="col-md-3"><label class="form-label small fw-bold">Completed From</label>
+                                <input type="date" class="form-control form-control-sm" x-model="archiveFilters.completedFrom" @change="onArchiveFilterChange()">
+                            </div>
+                            <div class="col-md-3"><label class="form-label small fw-bold">Completed To</label>
+                                <input type="date" class="form-control form-control-sm" x-model="archiveFilters.completedTo" @change="onArchiveFilterChange()">
+                            </div>
+
                             <div class="col-md-3"><label class="form-label small fw-bold">Sort By</label>
-                                <select class="form-select form-select-sm" x-model="archiveSort.key">
-                                    <option value="ticket">Ticket ID</option>
-                                    <option value="name">Candidate Name</option>
-                                    <option value="department">Department</option>
-                                    <option value="doj">Date of Joining</option>
-                                    <option value="completion">Date of Completion</option>
+                                <select class="form-select form-select-sm" x-model="archiveSort.key" @change="onArchiveFilterChange()">
+                                    <template x-for="s in archiveSortOptions" :key="s.value">
+                                        <option :value="s.value" x-text="s.label"></option>
+                                    </template>
                                 </select>
                             </div>
                             <div class="col-md-2"><label class="form-label small fw-bold">Order</label>
-                                <select class="form-select form-select-sm" x-model="archiveSort.dir">
+                                <select class="form-select form-select-sm" x-model="archiveSort.dir" @change="onArchiveFilterChange()">
                                     <option value="asc">Ascending</option>
                                     <option value="desc">Descending</option>
                                 </select>
                             </div>
-                            <div class="col-md-4 d-flex align-items-end gap-3 flex-wrap">
-                                <div class="form-check"><input class="form-check-input" type="checkbox" id="arcWlCheck" x-model="archiveFilters.waitlisted"><label class="form-check-label small" for="arcWlCheck">Waitlisted</label></div>
-                                <div class="form-check"><input class="form-check-input" type="checkbox" id="arcWardCheck" x-model="archiveFilters.ward"><label class="form-check-label small" for="arcWardCheck">Wards</label></div>
-                                <div class="form-check"><input class="form-check-input" type="checkbox" id="arcNsCheck" x-model="archiveFilters.noShow"><label class="form-check-label small" for="arcNsCheck">No-Shows</label></div>
-                                <button class="btn btn-sm btn-outline-secondary fw-bold ms-auto" @click="resetArchiveFilters()">Reset</button>
+
+                            <div class="col-12">
+                                <div class="d-flex align-items-center gap-3 flex-wrap pt-2 border-top">
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="arcWardCheck" x-model="archiveFilters.ward" @change="onArchiveFilterChange()"><label class="form-check-label small" for="arcWardCheck">Wards</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="arcWlCheck" x-model="archiveFilters.waitlisted" @change="onArchiveFilterChange()"><label class="form-check-label small" for="arcWlCheck">Waitlisted</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="arcNsCheck" x-model="archiveFilters.noShow" @change="onArchiveFilterChange()"><label class="form-check-label small" for="arcNsCheck">No-Shows</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="arcResubCheck" x-model="archiveFilters.resubmitted" @change="onArchiveFilterChange()"><label class="form-check-label small" for="arcResubCheck">Resubmitted</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="arcEscCheck" x-model="archiveFilters.adminEscalated" @change="onArchiveFilterChange()"><label class="form-check-label small" for="arcEscCheck">Admin-Escalated</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="arcResCheck" x-model="archiveFilters.dojRescheduleUsed" @change="onArchiveFilterChange()"><label class="form-check-label small" for="arcResCheck">DOJ Reschedule Used</label></div>
+                                    <!-- Allotted a day the administrator never approved. HR may
+                                         do this deliberately, and once a cycle is closed this is
+                                         the only place the decision is visible. -->
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="arcOffCalCheck" x-model="archiveFilters.offCalendarDoj" @change="onArchiveFilterChange()"><label class="form-check-label small" for="arcOffCalCheck">Off-Calendar Joining Date</label></div>
+                                    <button class="btn btn-sm btn-outline-secondary fw-bold ms-auto" @click="resetArchiveFilters()">Reset All Filters</button>
+                                </div>
                             </div>
-                            <div class="col-md-2 text-end pt-1">
-                                <button class="btn btn-sm btn-link text-decoration-none text-muted p-0 fw-bold" @click="clearFilters()">Clear Filters</button>
+
+                            <!-- Legend for the joining calendar's three marks. -->
+                            <div class="col-12">
+                                <div class="d-flex align-items-center gap-3 flex-wrap small text-muted pt-2">
+                                    <span class="fw-bold text-uppercase" style="font-size:.7rem;">Joining calendar:</span>
+                                    <span><span class="ahr-legend-swatch ahr-approved-date"></span> Approved &amp; used</span>
+                                    <span><span class="ahr-legend-swatch ahr-approved-unused-date"></span> Approved, never used</span>
+                                    <span><span class="ahr-legend-swatch ahr-offcalendar-date"></span> Used but never approved</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1220,11 +1422,45 @@
                                     </td>
                                 </tr>
                             </template>
-                            <tr x-show="filteredArchives.length === 0">
+                            <tr x-show="!isLoadingArchives && filteredArchives.length === 0">
                                 <td colspan="9" class="text-center py-5 text-muted"><i class="bi bi-inbox fs-3 d-block mb-2"></i> No records match the current filters.</td>
+                            </tr>
+                            <!-- Every filter, sort and page turn is a request now, so
+                                 there is a moment with nothing drawn. Without this the
+                                 table blinks to "no records match" and back. -->
+                            <tr x-show="isLoadingArchives">
+                                <td colspan="9" class="text-center py-5 text-muted">
+                                    <span class="spinner-border spinner-border-sm me-2" role="status"></span> Retrieving records...
+                                </td>
                             </tr>
                         </tbody>
                     </table>
+                </div>
+
+                <!-- PAGE CONTROLS.
+                     The count reads the FULL filtered result from the server, so it
+                     says how many records the current filters actually matched --
+                     not how many are drawn. The range label is shown even on a
+                     single page, because in an archive "12 of 1,847" is itself the
+                     answer to a question somebody asked. -->
+                <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top bg-light"
+                     x-show="archiveCycle && archiveTotal > 0">
+                    <span class="small text-muted fw-bold" x-text="archiveRangeLabel"></span>
+                    <nav aria-label="Archive pages" x-show="archivePageCount > 1">
+                        <ul class="pagination pagination-sm mb-0">
+                            <li class="page-item" :class="archivePage === 1 ? 'disabled' : ''">
+                                <button class="page-link" @click="goToArchivePage(archivePage - 1)" :disabled="archivePage === 1">Previous</button>
+                            </li>
+                            <template x-for="n in archivePageNumbers" :key="n">
+                                <li class="page-item" :class="n === archivePage ? 'active' : ''">
+                                    <button class="page-link" @click="goToArchivePage(n)" x-text="n"></button>
+                                </li>
+                            </template>
+                            <li class="page-item" :class="archivePage === archivePageCount ? 'disabled' : ''">
+                                <button class="page-link" @click="goToArchivePage(archivePage + 1)" :disabled="archivePage === archivePageCount">Next</button>
+                            </li>
+                        </ul>
+                    </nav>
                 </div>
 
                 <!-- EMPTY STATE (NO CYCLE SELECTED) -->
@@ -1485,7 +1721,7 @@
                             </div>
                             <div class="col-6">
                                 <p class="small text-muted mb-0">Projected End Date</p>
-                                <p class="small fw-bold text-primary mb-0" title="Calculated automatically"><i class="bi bi-calendar-check me-1"></i> <span x-text="calculateCompletionDate(getDisplayDojValue(selectedApplicant), selectedApplicant.internship)"></span> <i class="bi bi-lock-fill ms-1 text-muted small"></i></p>
+                                <p class="small fw-bold text-primary mb-0" title="Calculated automatically"><i class="bi bi-calendar-check me-1"></i> <span x-text="completionDateDisplay(selectedApplicant)"></span> <i class="bi bi-lock-fill ms-1 text-muted small"></i></p>
                             </div>
                         </div>
                     </div>
@@ -1924,7 +2160,7 @@
                                                 </div>
                                                 <div class="col-6">
                                                     <span class="small text-muted d-block text-uppercase mb-1">Calculated End Date</span>
-                                                    <div class="fw-bold text-primary"><i class="bi bi-calendar-check me-1"></i> <span x-text="calculateCompletionDate(selectedApplicant.actualDoj, selectedApplicant.internship)"></span></div>
+                                                    <div class="fw-bold text-primary"><i class="bi bi-calendar-check me-1"></i> <span x-text="completionDateDisplay(selectedApplicant)"></span></div>
                                                 </div>
                                                 <div class="col-12 mt-2 pt-2 border-top">
                                                     <span class="small text-muted d-block text-uppercase mb-1">Allotted Sub-Department</span>
@@ -2579,11 +2815,27 @@
                         </div>
                     </template>
                     
+                    <!-- WHAT THE READER IS LOOKING AT.
+                         Shown INSTEAD of every action panel above, not alongside
+                         them: the guard on that block and the condition here are
+                         exact opposites, so one of the two always renders and
+                         never both. -->
                     <template x-if="selectedApplicant.isArchivedRecord">
                         <div class="text-center p-4 border rounded-3 bg-secondary bg-opacity-10 mt-4">
                             <i class="bi bi-archive-fill text-secondary fs-1 d-block mb-2"></i>
                             <h5 class="fw-bold text-dark text-uppercase">Archived Record</h5>
-                            <p class="text-muted small mb-0">This application is locked in cold storage. No further actions can be taken.</p>
+                            <p class="text-muted small mb-2">This application is locked in cold storage. No further actions can be taken.</p>
+                            <div class="d-flex justify-content-center gap-4 flex-wrap small">
+                                <span class="text-muted">Cycle: <span class="fw-bold text-dark" x-text="selectedApplicant.cycle"></span></span>
+                                <span class="text-muted" x-show="selectedApplicant.archivedOn">Archived: <span class="fw-bold text-dark" x-text="selectedApplicant.archivedOn"></span></span>
+                                <!-- HOW FAR THEY GOT. 'Rejected' alone does not
+                                     distinguish somebody turned away in week one
+                                     from somebody who served the whole internship
+                                     and failed the assessment. -->
+                                <span class="text-muted" x-show="selectedApplicant.outcomeStage">Outcome:
+                                    <span class="fw-bold text-dark" x-text="archiveStageLabel(selectedApplicant.outcomeStage)"></span>
+                                </span>
+                            </div>
                         </div>
                     </template>
 
@@ -2989,171 +3241,25 @@
       </div>
     </div>
 
-    <!-- ARCHIVED RECORD DRAWER -- VIEW ONLY -->
-    <!-- A separate drawer from the live one, deliberately. Reusing the working
-         drawer would mean hiding a dozen action panels by condition, and one
-         missed condition would put a live action button on a closed record. This
-         one has no actions to hide. -->
-    <div class="offcanvas offcanvas-end" tabindex="-1" id="archiveDrawer" style="width: 640px;">
-      <div class="offcanvas-header border-bottom bg-light">
-        <div>
-          <div class="text-muted text-uppercase fw-bold" style="font-size: 0.65rem; letter-spacing: 0.08em;">Archived Record</div>
-          <h5 class="offcanvas-title fw-bold mb-0" x-text="selectedArchive ? selectedArchive.ticket : ''"></h5>
-        </div>
-        <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
-      </div>
+    <!-- THE SEPARATE ARCHIVED-RECORD DRAWER WAS REMOVED HERE.
+         
+         It carried its own reduced view of a closed application, and the comment
+         that stood here argued for keeping it: reusing the live drawer would
+         mean hiding a dozen action panels by condition, and one missed condition
+         would put a live action button on a closed record.
+         
+         The risk was real, but the cost of two drawers turned out to be higher.
+         They drift, and this one already had -- it showed nothing of the
+         clearance, the evaluation, the certificate or who signed it, because
+         those were never added to it after Phase 2 was built.
+         
+         Archived records now open in the live drawer above, behind ONE guard: a
+         single x-if on "!selectedApplicant.isArchivedRecord" wraps every action
+         panel, and the Archived Record banner renders on the exact opposite
+         condition. An action added to that drawer next year is disabled on
+         closed records by default, rather than being live until somebody
+         remembers this file exists. -->
 
-      <div class="offcanvas-body p-4" x-show="selectedArchive">
-        <!-- Stated plainly at the top, before anything else. -->
-        <div class="alert alert-secondary border d-flex align-items-start gap-2 mb-4">
-          <i class="bi bi-lock-fill mt-1"></i>
-          <div class="small">
-            <strong class="d-block text-uppercase">View only</strong>
-            This cycle was hard-closed on <strong x-text="selectedArchive ? selectedArchive.archivedOn : ''"></strong>.
-            Archived records cannot be edited, and archiving is final.
-          </div>
-        </div>
-
-        <div class="d-flex align-items-center gap-2 mb-3">
-          <h5 class="fw-bold text-uppercase mb-0" x-text="selectedArchive ? selectedArchive.name : ''"></h5>
-          <span x-show="selectedArchive && selectedArchive.isInstitutional" class="badge text-white" style="background-color: #6f42c1;"><i class="bi bi-building"></i> COLLEGE REFERRAL</span>
-        </div>
-
-        <!-- OUTCOME -->
-        <div class="card border-0 shadow-sm rounded-3 mb-3">
-          <div class="p-3">
-            <div class="d-flex justify-content-between align-items-center">
-              <span class="small text-muted text-uppercase fw-bold">Outcome</span>
-              <span class="badge rounded-pill fs-6"
-                    :class="selectedArchive && selectedArchive.status === 'Completed' ? 'bg-success bg-opacity-10 text-success' : 'bg-danger bg-opacity-10 text-danger'"
-                    x-text="selectedArchive ? selectedArchive.status : ''"></span>
-            </div>
-            <div x-show="selectedArchive && selectedArchive.rejectionCategory" class="small text-muted mt-2">
-              Reason: <strong class="text-dark" x-text="selectedArchive ? selectedArchive.rejectionCategory : ''"></strong>
-            </div>
-          </div>
-        </div>
-
-        <!-- DETAILS -->
-        <div class="card border-0 shadow-sm rounded-3 mb-3">
-          <div class="p-3">
-            <div class="small fw-bold text-uppercase text-muted mb-2">Candidate</div>
-            <template x-for="row in (selectedArchive ? [
-                  ['Email', selectedArchive.bio.email],
-                  ['Mobile', selectedArchive.bio.mobile],
-                  ['Aadhaar', selectedArchive.bio.aadhaar_number],
-                  ['University', selectedArchive.academic.university],
-                  ['College', selectedArchive.academic.college],
-                  ['Course', selectedArchive.academic.course],
-                  ['Branch', selectedArchive.academic.branch],
-                  ['Semester', selectedArchive.academic.semester],
-                  ['Score', selectedArchive.academic.score]
-                ] : [])" :key="row[0]">
-              <div class="d-flex justify-content-between border-bottom py-1" style="font-size: 0.85rem;">
-                <span class="text-muted" x-text="row[0]"></span>
-                <span class="fw-bold text-dark text-end" x-text="row[1] || '—'"></span>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <div class="card border-0 shadow-sm rounded-3 mb-3">
-          <div class="p-3">
-            <div class="small fw-bold text-uppercase text-muted mb-2">Placement</div>
-            <template x-for="row in (selectedArchive ? [
-                  ['Cycle', selectedArchive.cycle],
-                  ['Department', selectedArchive.department],
-                  ['Sub-Department', selectedArchive.subDepartment],
-                  ['Duration', selectedArchive.duration],
-                  ['Referrer', selectedArchive.referrerName],
-                  ['Submitted', selectedArchive.submitted],
-                  ['Date of Joining', selectedArchive.doj],
-                  ['Date of Completion', selectedArchive.completion]
-                ] : [])" :key="row[0]">
-              <div class="d-flex justify-content-between border-bottom py-1" style="font-size: 0.85rem;">
-                <span class="text-muted" x-text="row[0]"></span>
-                <span class="fw-bold text-dark text-end" x-text="row[1] || '—'"></span>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- DOCUMENTS -->
-        <!-- Driven by what the candidate was ASKED for, not by the files that
-             happen to exist. That is the only way to distinguish a document that
-             was never required from one that was required and never supplied --
-             which for a rejected candidate is often the whole reason. -->
-        <div class="card border-0 shadow-sm rounded-3 mb-3">
-          <div class="p-3">
-            <div class="small fw-bold text-uppercase text-muted mb-2">Documents</div>
-
-            <template x-if="selectedArchive && selectedArchive.requirements.length === 0">
-              <div class="small text-muted fst-italic">
-                No document requirements were recorded for this application. It was closed before any documents were requested.
-              </div>
-            </template>
-
-            <template x-for="req in (selectedArchive ? selectedArchive.requirements : [])" :key="req.name">
-              <div class="d-flex justify-content-between align-items-center border-bottom py-2">
-                <div>
-                  <span class="small fw-bold text-dark d-block text-uppercase" x-text="req.name"></span>
-                  <span class="small text-muted" x-text="req.isMandatory ? 'Mandatory' : 'Optional'"></span>
-                </div>
-                <template x-if="req.wasSupplied && selectedArchive.docs[req.name] && selectedArchive.docs[req.name].viewUrl">
-                  <a :href="'http://127.0.0.1:8000' + selectedArchive.docs[req.name].viewUrl + '&emp=' + (identity ? identity.employeeCode : '')"
-                     target="_blank" class="btn btn-sm btn-outline-primary fw-bold px-3 text-decoration-none"><i class="bi bi-eye-fill"></i> View</a>
-                </template>
-                <template x-if="!req.wasSupplied">
-                  <span class="badge" :class="req.isMandatory ? 'bg-danger bg-opacity-10 text-danger border border-danger' : 'bg-secondary bg-opacity-10 text-secondary border border-secondary'"
-                        x-text="req.isMandatory ? 'NOT SUPPLIED' : 'NOT PROVIDED (OPTIONAL)'"></span>
-                </template>
-              </div>
-            </template>
-
-            <!-- Anything on file that was not part of the recorded requirements:
-                 documents added by HR after submission, or collected before the
-                 snapshot existed. Shown so nothing on file is invisible. -->
-            <template x-for="name in (selectedArchive ? Object.keys(selectedArchive.docs).filter(n => !selectedArchive.requirements.some(r => r.name === n)) : [])" :key="name">
-              <div class="d-flex justify-content-between align-items-center border-bottom py-2">
-                <div>
-                  <span class="small fw-bold text-dark d-block text-uppercase" x-text="name"></span>
-                  <span class="small text-muted fst-italic">Not part of the recorded requirements</span>
-                </div>
-                <a :href="'http://127.0.0.1:8000' + selectedArchive.docs[name].viewUrl + '&emp=' + (identity ? identity.employeeCode : '')"
-                   target="_blank" class="btn btn-sm btn-outline-secondary fw-bold px-3 text-decoration-none"><i class="bi bi-eye-fill"></i> View</a>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- TIMELINE -->
-        <div class="card border-0 shadow-sm rounded-3 mb-3">
-          <div class="p-3">
-            <div class="small fw-bold text-uppercase text-muted mb-3">Timeline</div>
-            <template x-if="selectedArchive && selectedArchive.timeline.length === 0">
-              <div class="small text-muted fst-italic">No history was recorded for this application.</div>
-            </template>
-            <template x-for="(step, i) in (selectedArchive ? selectedArchive.timeline : [])" :key="i">
-              <div class="d-flex gap-3 pb-3">
-                <div class="text-center" style="width: 20px;">
-                  <i class="bi bi-circle-fill text-primary" style="font-size: 0.6rem;"></i>
-                  <div x-show="i < selectedArchive.timeline.length - 1" class="mx-auto bg-secondary bg-opacity-25" style="width: 2px; height: 100%; min-height: 24px;"></div>
-                </div>
-                <div class="flex-grow-1">
-                  <div class="fw-bold text-dark small" x-text="step.title"></div>
-                  <div class="text-muted" style="font-size: 0.75rem;" x-text="step.timestamp"></div>
-                  <div class="small mt-1" x-show="step.remarks" x-text="step.remarks"></div>
-                  <div class="text-muted mt-1" style="font-size: 0.72rem;">
-                    <i class="bi bi-person-fill me-1"></i><span x-text="step.actor"></span>
-                    <span class="badge bg-light text-dark border ms-1" x-text="step.role"></span>
-                  </div>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- CYCLE CHANGE CONFIRMATION -->
     <!-- Shown before ANY configuration change is applied. DMRC runs concurrent

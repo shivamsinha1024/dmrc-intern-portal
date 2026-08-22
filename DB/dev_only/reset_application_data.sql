@@ -11,7 +11,7 @@
 -- CLEARED
 --   applications, students, academic_details, documents, joining_details
 --   application_status_history, notifications, system_audit_logs
---   college_referral_drafts, archived_* (cold storage)
+--   archived_* (all six cold-storage tables)
 --   cycle_department_capacities.seats_occupied  -> reset to 0
 --
 -- PRESERVED
@@ -41,6 +41,18 @@ USE dmrc_internship_portal;
 -- Child rows first, so foreign keys are never violated mid-script and the
 -- statements remain readable without disabling integrity checks.
 
+-- THE FULL ARCHIVE, not three tables of six.
+--
+-- archived_status_history and archived_document_requirements were missing
+-- from this script: a reset left every archived timeline and requirement
+-- row behind, pointing at applications that no longer existed. Invisible
+-- in the interface, but they accumulate with every reset and surface in
+-- any later archive query.
+--
+-- archived_cycle_joining_dates came with the archive rebuild.
+DELETE FROM archived_cycle_joining_dates;
+DELETE FROM archived_status_history;
+DELETE FROM archived_document_requirements;
 DELETE FROM archived_documents;
 DELETE FROM archived_academic_details;
 DELETE FROM archived_applications;
@@ -53,7 +65,13 @@ DELETE FROM academic_details;
 
 DELETE FROM applications;
 DELETE FROM students;
-DELETE FROM college_referral_drafts;
+-- college_referral_drafts was NOT cleared here -- the table no longer
+-- exists. Migration 01 dropped it: a college referral is an ordinary
+-- applications row from the moment of intake, so the delete above already
+-- covers it. The statement that stood here aborted this script with
+-- "Table doesn't exist", leaving the reset half-finished -- applications
+-- and students gone, the audit ledger and seat counters untouched.
+-- factory_reset.sql had the same line and was fixed; this file was missed.
 
 -- The global admin ledger. Cleared too, so the audit view starts empty and
 -- matches the (now empty) application set.

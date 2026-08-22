@@ -1,64 +1,25 @@
-# ==============================================================================
-# DMRC INTERNSHIP PORTAL - PYTHON DEPENDENCIES
-#
-# Install everything this project needs:
-#
-#     pip install -r requirements.txt
-#
-# ------------------------------------------------------------------------------
-# FOR THE DMRC IT TEAM
-#
-# All of these are pure-Python packages installed from PyPI. None of them
-# requires a compiler, a system library, or any software to be installed on the
-# server outside Python itself. There is no separate binary to obtain, no
-# document converter, and no headless browser.
-#
-# Versions are given as ranges rather than exact pins: the lower bound is what
-# the portal is known to work with, and the upper bound stops a future major
-# release from changing behaviour underneath it. If your environment requires
-# exact pins, run `pip freeze` after a successful install and keep the output.
-# ==============================================================================
-
-# --- FRAMEWORK ---------------------------------------------------------------
-Django>=4.2,<5.0
-djangorestframework>=3.14,<4.0
-
-# --- DATABASE ----------------------------------------------------------------
-# PyMySQL is installed as the MySQLdb driver in settings.py, so the portal talks
-# to TiDB or MySQL without needing the mysqlclient C extension to be compiled.
-PyMySQL>=1.1,<2.0
-
-# --- CONFIGURATION -----------------------------------------------------------
-# Reads the .env file that holds the secret key, the database credentials and
-# the identity provider setting.
-python-dotenv>=1.0,<2.0
-
-# --- BROWSER ACCESS ----------------------------------------------------------
-# The two portals are served as static pages, so their requests to this API are
-# cross-origin and need these headers. See CORS_* in settings.py.
-django-cors-headers>=4.3,<5.0
-
-# --- DOCUMENT GENERATION -----------------------------------------------------
-# reportlab draws the offer letter and the completion certificate as PDFs, and
-# also produces the PDF exports in the admin Export Centre.
-reportlab>=4.0,<5.0
-
-# python-docx produces the editable Word version of the offer letter, which
-# HR-OPS downloads when a generated letter needs correcting.
-python-docx>=1.1,<2.0
-
-# pypdf stamps the HR-APP's signature onto a CORRECTED offer letter at the
-# moment it is approved. HR-OPS edits the unsigned Word copy and uploads the PDF
-# they exported from it, so that file arrives unsigned; approving it is what
-# signs it, and this is what writes the signature onto the stored page.
-pypdf>=5.0,<6.0
-
-# Pillow handles the candidate's photograph and the signature image: reading
-# their real dimensions so each is fitted inside its box on the letter without
-# being stretched or cropped.
-Pillow>=10.0,<12.0
-
-# --- REPORTING ---------------------------------------------------------------
-# pandas assembles the Export Centre's datasets; openpyxl writes them as .xlsx.
-pandas>=2.0,<4.0
-openpyxl>=3.1,<4.0
+asgiref==3.11.1
+cffi==2.0.0
+charset-normalizer==3.4.9
+cryptography==50.0.0
+Django==4.2.30
+django-cors-headers==4.9.0
+djangorestframework==3.16.1
+et_xmlfile==2.0.0
+lxml==6.1.1
+numpy==2.0.2
+openpyxl==3.1.5
+pandas==2.3.3
+pillow==11.3.0
+pycparser==2.23
+PyMySQL==1.2.0
+pypdf==5.9.0
+python-dateutil==2.9.0.post0
+python-docx==1.2.0
+python-dotenv==1.2.1
+pytz==2026.3.post1
+reportlab==4.5.1
+six==1.17.0
+sqlparse==0.5.5
+typing_extensions==4.16.0
+tzdata==2026.3

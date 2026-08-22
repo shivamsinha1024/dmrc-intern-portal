@@ -2,6 +2,24 @@
  * DMRC INTERN REFERRAL WIZARD — RELEASABLE APPS ENGINE
  * Powered natively by Alpine.js reactive state architecture.
  */
+
+// Where the API lives.
+//
+// DEFAULTS TO EXACTLY WHAT THIS FILE ALREADY HARDCODES, so nothing changes
+// behaviour today. To point the dashboard at DMRC's intranet host, set
+// window.DMRC_API_BASE in hr_dashboard.html BEFORE this script loads -- one
+// line, no code change:
+//
+//     <script>window.DMRC_API_BASE = 'https://intranet.dmrc.org';</script>
+//
+// Only the archive's calls read this so far. The rest of this file still has
+// its own hardcoded http://127.0.0.1:8000 addresses -- around forty of them,
+// and every one will fail on the intranet. Converting them is a separate job
+// that touches every screen, and it needs doing before handover.
+const API_BASE = (typeof window !== 'undefined' && window.DMRC_API_BASE)
+    ? window.DMRC_API_BASE
+    : 'http://127.0.0.1:8000';
+
 document.addEventListener('alpine:init', () => {
     Alpine.data('hrCommandCenter', () => ({
         // Global UI State & Assigned Demo Roles
@@ -33,6 +51,20 @@ document.addEventListener('alpine:init', () => {
         isSidebarCollapsed: false,
         activeTab: 'Pending', 
         showFilterDrawer: false,
+
+        // --- PAGING ------------------------------------------------------
+        // Both queues show one page of records at a time. This is a DRAWING
+        // limit, not a loading one: the server still sends every record and the
+        // browser still filters and sorts all of them, so the master search and
+        // the filters stay instant. What it removes is the cost of drawing
+        // several hundred rows again on every keystroke and every tick box.
+        //
+        // The exports are deliberately NOT paged -- see exportQueue and
+        // exportCollegeReferrals. A file that silently contained only the
+        // 25 rows on screen would be discovered after it had been sent.
+        PAGE_SIZE: 25,
+        queuePage: 1,
+        referralPage: 1,
         selectedApplicant: null,
         
         // Bulk Actions & Clearance State
@@ -121,32 +153,14 @@ document.addEventListener('alpine:init', () => {
         adminOrigDept: '',
         adminOrigWard: false,
 
-        // --- NEW: FORENSIC, ARCHIVE VAULT & AUDIT EXPORT STATE ---
+        // --- FORENSIC & EXPORT STATE ---
+        // The Archive Vault's own state now lives together further down, under
+        // the ARCHIVE VAULT heading, rather than being split across two places.
         forensicData: { ticket: null, isLoading: false, candidateUploads: [], officialDocuments: [] },
-        archiveSearch: '',
-        archiveYear: '',
-        archiveCycle: '',
         isExportingQueue: false,
         isExporting: false,
         isExportingAudit: false,
-        archivedApplications: [],
-        selectedArchive: null,
 
-        // Offered years and cycles come from what has ACTUALLY been archived.
-        // These were hardcoded to 2025 and 2026 with both terms assumed, so the
-        // pickers listed cycles that had never existed.
-        archiveYearsAvailable: [],
-        archiveCyclesByYear: {},
-
-        get availableArchiveYears() {
-            return this.archiveYearsAvailable;
-        },
-
-        get availableArchiveCycles() {
-            if (!this.archiveYear) return [];
-            return this.archiveCyclesByYear[this.archiveYear] || [];
-        },
-        
         iamUsers: [], // Now fetches from TiDB
         // Only the code and the role are chosen. Name, designation and
         // department are READ from the employee directory -- see
@@ -218,99 +232,207 @@ document.addEventListener('alpine:init', () => {
             return this.auditLogs.filter(log => log.actor.toUpperCase().includes(query) || log.target.toUpperCase().includes(query) || log.category.toUpperCase().includes(query) || log.details.toUpperCase().includes(query));
         },
 
-        // Everything in an archived cycle is finished, so the useful cuts differ
-        // from the live queue: outcome and reason rather than stage.
-        archiveFilters: { outcome: '', department: '', subDepartment: '',
-                          rejectionCategory: '', source: '',
-                          ward: false, waitlisted: false, noShow: false },
-        archiveSort: { key: 'ticket', dir: 'asc' },
-
-        get filteredArchives() {
-            if (!this.archiveCycle) return [];
-            let result = this.archivedApplications.filter(app => app.cycle === this.archiveCycle);
-
-            const f = this.archiveFilters;
-            if (f.outcome) result = result.filter(a => a.status === f.outcome);
-            if (f.department) result = result.filter(a => a.department === f.department);
-            if (f.subDepartment) result = result.filter(a => a.subDepartment === f.subDepartment);
-            if (f.rejectionCategory) result = result.filter(a => a.rejectionCategory === f.rejectionCategory);
-            if (f.source) result = result.filter(a => a.referralSource === f.source);
-            if (f.ward) result = result.filter(a => a.ward === true);
-            if (f.waitlisted) result = result.filter(a => a.waitlisted === true);
-            if (f.noShow) result = result.filter(a => a.noShow === true);
-
-            // Search runs AFTER the filters, narrowing what is on screen.
-            if (this.archiveSearch.trim() !== '') {
-                const q = this.archiveSearch.toUpperCase();
-                const hit = v => (v || '').toString().toUpperCase().includes(q);
-                result = result.filter(a =>
-                    hit(a.ticket) || hit(a.name) || hit(a.department) ||
-                    hit(a.subDepartment) || hit(a.academic && a.academic.college) ||
-                    hit(a.referrerName)
-                );
-            }
-
-            // Sorted last, so what is on screen is exactly what exports.
-            const { key, dir } = this.archiveSort;
-            const mult = dir === 'desc' ? -1 : 1;
-            result = [...result].sort((a, b) => {
-                // Dates are compared in ISO form, and BLANKS ALWAYS SINK to the
-                // bottom regardless of direction: a rejected candidate never
-                // joined and never completed, and scattering those empties
-                // through the dated records makes the list unreadable.
-                if (key === 'doj' || key === 'completion') {
-                    const av = key === 'doj' ? a.dojRaw : a.completionRaw;
-                    const bv = key === 'doj' ? b.dojRaw : b.completionRaw;
-                    if (!av && !bv) return 0;
-                    if (!av) return 1;
-                    if (!bv) return -1;
-                    return av < bv ? -1 * mult : av > bv ? 1 * mult : 0;
-                }
-                const av = (a[key] || '').toString().toUpperCase();
-                const bv = (b[key] || '').toString().toUpperCase();
-                if (!av && !bv) return 0;
-                if (!av) return 1;
-                if (!bv) return -1;
-                return av < bv ? -1 * mult : av > bv ? 1 * mult : 0;
-            });
-
-            return result;
+        // ======================================================================
+        // ARCHIVE VAULT
+        //
+        // The archive is FILTERED, SORTED AND PAGED ON THE SERVER. A cycle holds
+        // hundreds or thousands of records, and the screen used to fetch every
+        // one of them -- with its documents, requirements and timeline -- to
+        // draw twenty-five rows.
+        //
+        // So nothing below filters or sorts in the browser. Every control writes
+        // to archiveFilters and asks the server again. The consequence worth
+        // knowing: `archivedApplications` now holds ONE PAGE, never the cycle,
+        // so nothing may derive a total, a dropdown list or a set of dates from
+        // it. Those come from the server too -- see archiveOptions.
+        // ======================================================================
+        archiveFilters: {
+            // Everything in an archived cycle is finished, so the useful cuts
+            // are outcome and attribute rather than stage. These are built for
+            // the archive rather than copied from the Verification Queue: the
+            // queue's filters describe where an application is STUCK, and an
+            // archived record is not stuck anywhere.
+            outcome: '',            // Completed | Rejected
+            stage: '',              // how far they actually got -- see below
+            department: '',
+            subDepartment: '',
+            source: '',             // Employee | Institutional
+            rejectionCategory: '',
+            evaluationResult: '',   // Satisfactory | Unsatisfactory
+            emailStatus: '',        // Sent | Pending | Failed
+            duration: '',
+            doj: '',                // one date, from the calendar
+            completedFrom: '',      // a range: completion dates do not cluster
+            completedTo: '',
+            ward: false,
+            waitlisted: false,
+            noShow: false,
+            resubmitted: false,
+            adminEscalated: false,
+            dojRescheduleUsed: false,
+            offCalendarDoj: false,  // allotted a day never on the calendar
         },
 
-        setArchiveSort(key) {
-            if (this.archiveSort.key === key) {
-                this.archiveSort.dir = this.archiveSort.dir === 'asc' ? 'desc' : 'asc';
-            } else {
-                this.archiveSort = { key: key, dir: 'asc' };
-            }
+        // HOW FAR THEY GOT. 'Rejected' covers a candidate turned away in week
+        // one over a bad photograph AND somebody who served the full internship
+        // and failed their assessment. Both are filed identically and they are
+        // not the same record.
+        archiveStageOptions: [
+            { value: 'completed', label: 'Completed' },
+            { value: 'failed_evaluation', label: 'Served, failed evaluation' },
+            { value: 'joined_not_completed', label: 'Joined, did not complete' },
+            { value: 'offered_never_joined', label: 'Offered, never joined' },
+            { value: 'rejected_at_verification', label: 'Rejected at verification' },
+        ],
+
+        archiveSearch: '',
+        archiveYear: '',
+        archiveCycle: '',
+        archivedApplications: [],
+        selectedArchive: null,
+        isLoadingArchives: false,
+        isLoadingArchiveRecord: false,
+
+        // Its OWN drawer flag. This used to share showFilterDrawer with the
+        // Verification Queue, so opening filters on one screen left the panel
+        // open on the other.
+        showArchiveFilterDrawer: false,
+
+        // Sorted by the dropdown, not by clicking headers -- matching the two
+        // live queues. Resolved on the server; blanks sink to the bottom in
+        // BOTH directions, which is not what a plain descending sort does.
+        archiveSort: { key: 'ticket', dir: 'asc' },
+        archiveSortOptions: [
+            { value: 'ticket', label: 'Ticket ID' },
+            { value: 'name', label: 'Candidate Name' },
+            { value: 'college', label: 'College' },
+            { value: 'department', label: 'Department' },
+            { value: 'submitted', label: 'Submitted' },
+            { value: 'doj', label: 'Date of Joining' },
+            { value: 'completion', label: 'Date of Completion' },
+            { value: 'duration', label: 'Duration' },
+        ],
+
+        // Paging. archiveTotal is the count of everything MATCHING, not what is
+        // on screen -- the distinction matters for the export, which covers all
+        // of it.
+        archivePage: 1,
+        archivePageCount: 1,
+        archiveTotal: 0,
+        archiveRangeLabel: '0 of 0',
+
+        // Dropdown values and calendar marks for the selected cycle, from the
+        // server. Derived in the browser these would reflect one page: a
+        // Department dropdown would list only the departments that happened to
+        // appear in the first twenty-five rows.
+        archiveOptions: {
+            departments: [], subDepartments: [], rejectionCategories: [],
+            durations: [], approvedDojDates: [], usedDojDates: [],
+            offCalendarDojDates: [],
+        },
+
+        // Offered years and cycles come from what has ACTUALLY been archived.
+        // These were hardcoded to 2025 and 2026 with both terms assumed, so the
+        // pickers listed cycles that had never existed.
+        archiveYearsAvailable: [],
+        archiveCyclesByYear: {},
+
+        get availableArchiveYears() {
+            return this.archiveYearsAvailable;
+        },
+
+        get availableArchiveCycles() {
+            if (!this.archiveYear) return [];
+            return this.archiveCyclesByYear[this.archiveYear] || [];
+        },
+
+        // The rows on screen. NOT filtered here -- the server already did.
+        get filteredArchives() {
+            return this.archivedApplications;
+        },
+
+        // How many filters are in force, for the badge on the Filters button.
+        // The cycle pickers are not counted: they are how you get to the screen
+        // at all, not a narrowing of it.
+        get archiveActiveFilterCount() {
+            const f = this.archiveFilters;
+            let n = 0;
+            Object.keys(f).forEach(key => {
+                const value = f[key];
+                if (value === true) n += 1;
+                else if (typeof value === 'string' && value.trim() !== '') n += 1;
+            });
+            if (this.archiveSearch.trim() !== '') n += 1;
+            return n;
         },
 
         resetArchiveFilters() {
-            this.archiveFilters = { outcome: '', department: '', subDepartment: '',
-                                    rejectionCategory: '', source: '',
-                                    ward: false, waitlisted: false, noShow: false };
+            Object.keys(this.archiveFilters).forEach(key => {
+                this.archiveFilters[key] = (this.archiveFilters[key] === true ||
+                                            this.archiveFilters[key] === false)
+                    ? false : '';
+            });
             this.archiveSearch = '';
+            this.clearArchiveDojFilter();
+            this.archivePage = 1;
+            this.fetchArchives();
         },
 
-        // Only the departments and units that actually appear in this cycle's
-        // archive. Offering the current live lists would suggest options that
-        // match nothing, since both change over the years.
-        get archiveDepartmentOptions() {
-            const set = new Set(this.archivedApplications
-                .filter(a => a.cycle === this.archiveCycle)
-                .map(a => a.department).filter(Boolean));
-            return [...set].sort();
+        // Any filter changing sends the reader back to page 1. Staying on page 6
+        // of a list that now has two pages shows an empty table under a pager
+        // still claiming page 6 -- the server clamps it, but the reader should
+        // not see the jump happen.
+        onArchiveFilterChange() {
+            this.archivePage = 1;
+            this.fetchArchives();
         },
 
-        get archiveSubDeptOptions() {
-            const set = new Set(this.archivedApplications
-                .filter(a => a.cycle === this.archiveCycle)
-                .map(a => a.subDepartment).filter(Boolean));
-            return [...set].sort();
+        setArchiveSortKey(key) {
+            this.archiveSort.key = key;
+            this.archivePage = 1;
+            this.fetchArchives();
         },
 
-        // The columns on screen, in order. The export sends this list, so the
-        // file always has the same shape as the view it came from.
+        toggleArchiveSortDir() {
+            this.archiveSort.dir = this.archiveSort.dir === 'asc' ? 'desc' : 'asc';
+            this.archivePage = 1;
+            this.fetchArchives();
+        },
+
+        // The readable name for a stage code, shared by the filter dropdown and
+        // the drawer's banner so the two can never disagree.
+        archiveStageLabel(value) {
+            const match = this.archiveStageOptions.find(s => s.value === value);
+            return match ? match.label : '';
+        },
+
+        goToArchivePage(page) {
+            const target = Math.min(Math.max(1, page), this.archivePageCount);
+            if (target === this.archivePage) return;
+            this.archivePage = target;
+            this.fetchArchives();
+        },
+
+        // The same windowed page numbers the two live queues use, so all three
+        // pagers behave identically.
+        get archivePageNumbers() {
+            return this.pageNumbersFor(this.archivePage, this.archivePageCount);
+        },
+
+        // Typing searches the whole cycle, so each keystroke is a request. Held
+        // back until the typing stops, or a ticket number would fire nine of
+        // them and the answers could arrive out of order.
+        onArchiveSearchInput() {
+            clearTimeout(this._archiveSearchTimer);
+            this._archiveSearchTimer = setTimeout(() => {
+                this.archivePage = 1;
+                this.fetchArchives();
+            }, 350);
+        },
+
+        // The columns on screen, in order -- the same nine the Verification
+        // Queue's "All" tab shows. The export sends this list, so the file
+        // always has the same shape as the view it came from.
         get archiveColumns() {
             return [
                 { key: 'ticket',       label: 'Ticket ID' },
@@ -335,16 +457,91 @@ document.addEventListener('alpine:init', () => {
             else Object.values(this.allowedDojDatesByCycle).forEach(arr => { dates = dates.concat(arr); });
             return [...new Set(dates)].sort();
         },
+
+        // The joining dates an administrator has approved, HIGHLIGHTED in the
+        // Target DOJ filter calendar. Narrowed to one cycle once a cycle is
+        // chosen; the union of every open cycle's dates before that.
+        //
+        // Same source as every other calendar in the portal, so a date an
+        // administrator adds or withdraws appears here on the next load without
+        // anything else being changed.
+        get queueApprovedDojDates() {
+            return this.availableFilterDojDates;
+        },
+
+        // Cycles offered by the Verification Queue's filter. These were two
+        // literal strings in the markup -- 'Summer 2026' and 'Winter 2026' --
+        // so the filter would have gone on offering two dead cycles and would
+        // never have offered a new one.
+        //
+        // referralCycles comes from /api/college-referrals/, which every
+        // dashboard role may read and which returns only cycles still marked
+        // active. Archiving a cycle deactivates it, so an archived cycle drops
+        // out of this list by itself.
+        get queueCycleOptions() {
+            return (this.referralCycles || []).map(c => c.name).filter(Boolean);
+        },
+
+        // Sub-departments offered by the Verification Queue's filter.
+        //
+        // This dropdown used to read dbSubDepartments, which comes from
+        // /api/admin/configs/ -- a SYS-ADMIN-only endpoint. For HR-OPS and
+        // HR-APP, the two roles who actually work this queue, the list was
+        // therefore EMPTY and the filter could not be used at all.
+        //
+        // The per-cycle list every role may read is used instead, narrowed to
+        // the chosen cycle when there is one. Anything already recorded against
+        // an application is added too, so a unit an administrator has since
+        // switched off can still be filtered for on the records that carry it.
+        get queueSubDepartmentOptions() {
+            const seen = new Set();
+            const byCycle = this.referralSubDeptsByCycle || {};
+
+            if (this.filters.cycle) {
+                (byCycle[this.filters.cycle] || []).forEach(s => s && seen.add(s));
+            } else {
+                Object.values(byCycle).forEach(arr => (arr || []).forEach(s => s && seen.add(s)));
+
+                // The administrator list belongs to ONE cycle -- whichever the
+                // Admin Control Center is pointed at -- so it is only safe to
+                // add while no cycle is being filtered for. Adding it
+                // regardless would put another cycle's units into this list.
+                (this.dbSubDepartments || []).forEach(d => {
+                    if (d && d.isActive && d.name) seen.add(d.name);
+                });
+            }
+
+            // Units already recorded against an application, so one an
+            // administrator has since switched off can still be filtered for.
+            // Restricted to the chosen cycle for the same reason as above.
+            (this.applications || []).forEach(a => {
+                if (!a.subDepartment) return;
+                if (this.filters.cycle && a.cycle !== this.filters.cycle) return;
+                seen.add(a.subDepartment);
+            });
+
+            return [...seen].sort();
+        },
         
         masterSearch: '',
         // The College Referrals pipeline has its own search box, so a term
         // typed there does not silently filter the other queue as well.
         referralSearch: '',
         isExportingReferrals: false,
-        filters: { 
-            cycle: '', department: '', subDepartment: '', specificDoj: '', evaluationResult: '', 
-            resubmissionType: '', dmraStatus: '', isWaitlisted: false, isWard: false, isCritical: false, 
-            hasCustomOverride: false 
+        // The Verification Queue's filters.
+        //
+        // Removed: dmraStatus (the Academy status is worked in the drawer, not
+        // filtered for), hasCustomOverride (it matched offer letters awaiting
+        // re-approval, not administrator action, and was not useful), and
+        // isCritical, which required BOTH lifeline flags -- neither of which the
+        // server ever sets, so it could only ever return nothing.
+        //
+        // resubmissionType was one dropdown and is now two independent tick
+        // boxes, correctionBounce and dojBounce.
+        filters: {
+            cycle: '', department: '', subDepartment: '', specificDoj: '', evaluationResult: '',
+            correctionBounce: false, dojBounce: false,
+            isWaitlisted: false, isWard: false, dojRescheduleUsed: false
         },
         sortBy: 'submission_asc',
         fpInstances: [],
@@ -432,6 +629,24 @@ document.addEventListener('alpine:init', () => {
             // and the issuance screen needs it before it renders anything.
             await this.fetchSignatures();
             this.$watch('activeTab', () => { this.selectedRows = []; });
+            // Back to page one whenever what the queue is showing changes.
+            this.$watch('queueViewFingerprint', () => { this.queuePage = 1; });
+            this.$watch('referralViewFingerprint', () => { this.referralPage = 1; });
+            // Ticket order only means something inside one cycle. If the cycle
+            // is cleared while it is active, the sort falls back to Submission
+            // (Oldest) rather than silently leaving a meaningless order on
+            // screen with the dropdown still claiming to sort by ticket.
+            this.$watch('filters.cycle', (name) => {
+                if (!name && (this.sortBy === 'ticket_asc' || this.sortBy === 'ticket_desc')) {
+                    this.sortBy = 'submission_asc';
+                }
+                // Which joining dates count as approved depends on the cycle, so
+                // the Target DOJ calendar is redrawn to re-mark them. Without
+                // this the highlight would keep showing the previous cycle's
+                // dates until the calendar happened to rebuild.
+                const el = document.getElementById('queueDojFilter');
+                if (el && el._flatpickr) el._flatpickr.redraw();
+            });
             this.$watch('issuanceTab', () => { this.selectedRows = []; });
             this.$watch('referralTab', () => { this.selectedRows = []; });
             this.$watch('currentRole', async (newRole) => {
@@ -454,7 +669,18 @@ document.addEventListener('alpine:init', () => {
             // list stayed empty no matter what was selected: the dropdowns were
             // populated, the filter ran, and it filtered an array that had never
             // been loaded.
-            this.$watch('archiveCycle', () => { this.fetchArchives(); });
+            this.$watch('archiveCycle', () => {
+                // Back to page one and no filters carried over. A department or
+                // a joining date from the previous cycle almost never exists in
+                // the next one, so keeping them would show an empty table and
+                // look like the cycle had no records in it.
+                this.archivePage = 1;
+                this.resetArchiveFilters();
+            });
+
+            // Changing the YEAR clears the cycle, so the table does not keep
+            // showing last year's records under this year's picker.
+            this.$watch('archiveYear', () => { this.archiveCycle = ''; });
 
             this.$watch('adminSelectedCycle', async (name) => {
                 if (!name) return;
@@ -658,50 +884,197 @@ document.addEventListener('alpine:init', () => {
             await this.fetchArchives();
         },
 
+        // Sends the filters, the sort and the page; receives one page of rows.
+        //
+        // Every archive control funnels through here. Nothing is filtered or
+        // sorted in the browser any more, because the browser no longer holds
+        // the cycle -- only the page it is showing.
         async fetchArchives() {
+            this.isLoadingArchives = true;
             try {
                 const params = new URLSearchParams();
                 if (this.archiveCycle) {
-                    const parts = this.archiveCycle.split(' ');
-                    params.set('term', parts[0]);
-                    params.set('year', parts[1]);
+                    // 'Summer 2026' -> term=Summer, year=2026. Split on the LAST
+                    // space, so a term that ever contains one still parses.
+                    const at = this.archiveCycle.lastIndexOf(' ');
+                    params.set('term', this.archiveCycle.slice(0, at));
+                    params.set('year', this.archiveCycle.slice(at + 1));
                 } else if (this.archiveYear) {
                     params.set('year', this.archiveYear);
                 }
 
+                const f = this.archiveFilters;
+                Object.keys(f).forEach(key => {
+                    const value = f[key];
+                    // Only what is actually set. Sending empty values would make
+                    // the request unreadable in a log for no benefit.
+                    if (value === true) params.set(key, 'true');
+                    else if (typeof value === 'string' && value.trim() !== '') {
+                        params.set(key, value.trim());
+                    }
+                });
+
+                if (this.archiveSearch.trim() !== '') {
+                    params.set('search', this.archiveSearch.trim());
+                }
+                params.set('sortKey', this.archiveSort.key);
+                params.set('sortDir', this.archiveSort.dir);
+                params.set('page', this.archivePage);
+
                 const response = await fetch(
-                    `http://127.0.0.1:8000/api/hr/archives/?${params.toString()}`,
+                    `${API_BASE}/api/hr/archives/?${params.toString()}`,
                     { headers: this.authHeaders() });
 
                 if (!response.ok) {
                     if (response.status !== 403) console.error("GET Archives failed:", response.status);
                     this.archivedApplications = [];
+                    this.archiveTotal = 0;
+                    this.archivePageCount = 1;
+                    this.archiveRangeLabel = '0 of 0';
                     return;
                 }
                 const data = await response.json();
                 this.archivedApplications = data.records || [];
                 this.archiveYearsAvailable = data.availableYears || [];
                 this.archiveCyclesByYear = data.cyclesByYear || {};
+                this.archiveTotal = data.total || 0;
+                this.archivePageCount = data.pageCount || 1;
+                // Taken from the RESPONSE, not kept locally: the server clamps a
+                // page past the end, and the pager must show where the reader
+                // actually landed rather than where they asked to go.
+                this.archivePage = data.page || 1;
+                this.archiveRangeLabel = data.rangeLabel || '0 of 0';
+                if (data.options) {
+                    this.archiveOptions = Object.assign(
+                        { departments: [], subDepartments: [], rejectionCategories: [],
+                          durations: [], approvedDojDates: [], usedDojDates: [],
+                          offCalendarDojDates: [] },
+                        data.options);
+                    // The calendar marks days from these lists, so it has to be
+                    // rebuilt whenever they change -- switching cycles brings a
+                    // different set of approved dates.
+                    this.$nextTick(() => this.initArchiveDojCalendar(
+                        document.getElementById('archiveDojFilter')));
+                }
             } catch (error) {
                 console.error("Network error fetching Archives:", error);
                 // Left empty rather than falling back to specimen data: an
                 // empty vault is honest, invented records are not.
                 this.archivedApplications = [];
+                this.archiveTotal = 0;
+                this.archivePageCount = 1;
+                this.archiveRangeLabel = '0 of 0';
+            } finally {
+                this.isLoadingArchives = false;
             }
         },
 
-        // Opens the read-only drawer for one archived candidate. The record is
-        // already loaded, so there is no second request and nothing to fail
-        // halfway.
-        openArchivedRecord(ticket) {
-            const record = this.archivedApplications.find(a => a.ticket === ticket);
-            if (!record) {
-                alert('That record could not be found. Reload the archive and try again.');
-                return;
+        // Opens ONE archived candidate in the SAME drawer a live application
+        // uses, rather than a second drawer built to resemble it.
+        //
+        // Two drawers showing the same record in two shapes drift apart, and
+        // the archive's copy had already fallen behind -- it showed nothing of
+        // the clearance or the certificate.
+        //
+        // This costs a request, because the table's rows carry nine columns and
+        // the drawer needs sixty fields, the documents, the requirements and the
+        // timeline. Fetching all that for every row on the chance one is opened
+        // is what made this screen unusable at a full cycle's size.
+        async openArchivedRecord(ticket) {
+            this.isLoadingArchiveRecord = true;
+            try {
+                const response = await fetch(
+                    `${API_BASE}/api/hr/archives/record/?ticket=${encodeURIComponent(ticket)}`,
+                    { headers: this.authHeaders() });
+
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    alert(data.error || 'That record could not be opened. Reload the archive and try again.');
+                    return;
+                }
+
+                const record = await response.json();
+                // isArchivedRecord arrives set from the server. It is the ONE
+                // flag the drawer reads to disable every action, so it is not
+                // recomputed here -- a second source for it is a second place
+                // for it to be wrong.
+                this.selectedApplicant = record;
+                this.selectedArchive = record;
+
+                // ADMIN EDIT MODE IS FORCED OFF.
+                //
+                // It is application-level state, not per-record. A SYS-ADMIN who
+                // turned it on to correct a live application and then opened an
+                // archived one would find the identity fields editable, because
+                // every one of them is bound to :disabled="!adminEditMode".
+                // Nothing could actually be saved -- the Save controls sit
+                // inside the read-only guard -- but a closed record that looks
+                // editable is a closed record somebody will try to edit.
+                this.adminEditMode = false;
+
+                // Left-over state from whatever was open before. The sub-
+                // department box in particular keeps its own search text, which
+                // would otherwise show the previous candidate's unit.
+                this.subDeptSearchQuery = record.subDepartment || '';
+                this.showSubDeptDropdown = false;
+
+                new bootstrap.Offcanvas(document.getElementById('applicantDrawer')).show();
+            } catch (error) {
+                console.error("Network error opening archived record:", error);
+                alert('That record could not be opened. Check the connection and try again.');
+            } finally {
+                this.isLoadingArchiveRecord = false;
             }
-            this.selectedArchive = record;
-            new bootstrap.Offcanvas(document.getElementById('archiveDrawer')).show();
         },
+
+        // --- THE ARCHIVE'S JOINING-DATE CALENDAR -----------------------------
+        //
+        // The same widget used everywhere else in the portal, marking THREE
+        // kinds of day rather than one:
+        //
+        //   approved and used        a normal intake date
+        //   approved, never used     offered, nobody was allotted it
+        //   used but NEVER approved  an exception was made for that candidate
+        //
+        // The third is the one worth having. HR may allot ANY date when
+        // scheduling, and once a cycle is closed this is the only place that
+        // decision is visible.
+        //
+        // Every date stays selectable, including unapproved and past ones. The
+        // marks say where the records are; they do not limit the choice.
+        initArchiveDojCalendar(element) {
+            if (!element) return;
+            if (element._flatpickr) element._flatpickr.destroy();
+            const fp = flatpickr(element, {
+                dateFormat: 'Y-m-d', altInput: true, altFormat: 'd-m-Y',
+                allowInput: false,
+                defaultDate: this.archiveFilters.doj || null,
+                onDayCreate: (dObj, dStr, fpObj, dayElem) => {
+                    const y = dayElem.dateObj.getFullYear();
+                    const m = String(dayElem.dateObj.getMonth() + 1).padStart(2, '0');
+                    const d = String(dayElem.dateObj.getDate()).padStart(2, '0');
+                    const iso = `${y}-${m}-${d}`;
+                    const options = this.archiveOptions;
+                    const approved = (options.approvedDojDates || []).includes(iso);
+                    const used = (options.usedDojDates || []).includes(iso);
+                    if (approved && used) dayElem.classList.add('ahr-approved-date');
+                    else if (approved) dayElem.classList.add('ahr-approved-unused-date');
+                    else if (used) dayElem.classList.add('ahr-offcalendar-date');
+                },
+                onChange: (dates, str) => {
+                    this.archiveFilters.doj = str || '';
+                    this.onArchiveFilterChange();
+                }
+            });
+            this.fpInstances.push(fp);
+        },
+
+        clearArchiveDojFilter() {
+            this.archiveFilters.doj = '';
+            const el = document.getElementById('archiveDojFilter');
+            if (el && el._flatpickr) el._flatpickr.clear();
+        },
+
 
         async fetchCollegeReferrals() {
             try {
@@ -831,9 +1204,20 @@ document.addEventListener('alpine:init', () => {
             if (['Joined', 'Fix Clearance', 'Pending Certificate', 'Pending Dispatch', 'Completed'].includes(status)) return 'Actual DOJ';
             return 'Requested DOJ';
         },
+        // THE joining date that matters for one record, chosen by its status.
+        // The column, the Target DOJ filter, the Date of Joining sort and the
+        // projected end date all read this one function, so they can never
+        // disagree about which of the three stored dates a candidate's joining
+        // date actually is.
+        //
+        // 'Approved' sits in the allotted group even though a date is usually
+        // allotted a moment later: the server already falls back to the
+        // requested date while nothing has been allotted, so this reads
+        // correctly either way and starts reading the real date the instant one
+        // exists.
         getDisplayDojValue(app) {
             if (!app) return '';
-            if (['Scheduled', 'Pending Offer Letter', 'Fix Joining', 'Offer Ready', 'Pending Offer Re-Approval', 'Pending Arrival', 'Ready for Merge'].includes(app.status)) return app.allottedDoj;
+            if (['Approved', 'Scheduled', 'Pending Offer Letter', 'Fix Joining', 'Offer Ready', 'Pending Offer Re-Approval', 'Pending Arrival', 'Ready for Merge'].includes(app.status)) return app.allottedDoj;
             if (['Joined', 'Fix Clearance', 'Pending Certificate', 'Pending Dispatch', 'Completed'].includes(app.status)) return app.actualDoj;
             return app.doj;
         },
@@ -844,29 +1228,102 @@ document.addEventListener('alpine:init', () => {
             return 'Requested DOJ'; 
         },
 
+        // Which filters were in force, as a short readable phrase for the audit
+        // ledger. 'No filters' rather than an empty string, so a ledger entry
+        // never leaves a reader wondering whether the field failed to record.
+        activeFilterSummary() {
+            const f = this.filters;
+            const parts = [];
+            if (f.cycle) parts.push(`cycle ${f.cycle}`);
+            if (f.department) parts.push(`department ${f.department}`);
+            if (f.subDepartment) parts.push(`sub-department ${f.subDepartment}`);
+            if (f.specificDoj) parts.push(`DOJ ${f.specificDoj}`);
+            if (f.evaluationResult) parts.push(`evaluation ${f.evaluationResult}`);
+            if (f.correctionBounce) parts.push('returned for corrections');
+            if (f.dojBounce) parts.push('returned for DOJ update');
+            if (f.isWaitlisted) parts.push('waitlisted');
+            if (f.isWard) parts.push('wards');
+            if (f.dojRescheduleUsed) parts.push('DOJ reschedule used');
+            if (this.masterSearch) parts.push(`search "${this.masterSearch}"`);
+            return parts.length ? parts.join(', ') : 'No filters';
+        },
+
         // --- UNIVERSAL WYSIWYG EXPORT ENGINE ---
         async executeExport(moduleType, format) {
             let payloadIds = [];
             let fileName = `DMRC_Export_${moduleType}_${new Date().toISOString().split('T')[0]}`;
 
+            // Context carried to the server: what the file is OF, and what the
+            // officer could see when they asked for it. Recorded in the audit
+            // ledger, and for the queue it also names the joining-date column.
+            let context = {};
+
             // Extract precisely filtered IDs based on the active screen context
             if (moduleType === 'queue') {
                 this.isExportingQueue = true;
+                // The FULL filtered list, never the page on screen. Paging is a
+                // drawing limit; a file that silently held only 25 rows would be
+                // discovered after it had been sent to somebody.
                 payloadIds = this.processedQueue.map(app => app.ticket);
-                fileName = `DMRC_Active_Queue_${new Date().toISOString().split('T')[0]}`;
+                const cycleStr = this.filters.cycle ? `_${this.filters.cycle.replace(/\s+/g, '')}` : '';
+                fileName = `DMRC_Active_Queue_${this.activeTab.replace(/\s+/g, '')}${cycleStr}_${new Date().toISOString().split('T')[0]}`;
+                context = {
+                    tab: this.activeTab,
+                    // The exact heading on screen, so the column in the file
+                    // cannot say 'Actual DOJ' while holding requested dates.
+                    dojHeader: this.getTabDojHeader(this.activeTab),
+                    filters: this.activeFilterSummary(),
+                    sort: this.sortBy
+                };
             } else if (moduleType === 'archive') {
                 this.isExporting = true;
-                payloadIds = this.filteredArchives.map(app => app.ticket);
-                let deptStr = this.filters.department ? `_${this.filters.department}` : '_AllDepts';
-                fileName = `DMRC_Archive_${this.archiveCycle.replace(' ', '')}${deptStr}`;
+                // NO LIST OF TICKETS. The archive is paged, so the visible list
+                // is twenty-five records; sending it would have produced a
+                // twenty-five row file that only revealed itself as incomplete
+                // after somebody had sent it on. The server re-runs the filters
+                // and exports everything they match.
+                payloadIds = [];
+
+                // The filename reads the ARCHIVE'S OWN department filter. It
+                // used to read this.filters.department -- the VERIFICATION
+                // QUEUE's filter -- so an archive export was named after
+                // whatever department happened to be selected on a different
+                // screen, and read '_AllDepts' when the archive's own
+                // department filter WAS set.
+                const af = this.archiveFilters;
+                let deptStr = af.department ? `_${af.department}` : '_AllDepts';
+                fileName = `DMRC_Archive_${this.archiveCycle.replace(/ /g, '')}${deptStr}`;
+
+                // What the audit ledger records. It used to read 'No filters'
+                // unless a search had been typed, however many of the others
+                // were set -- so the ledger misdescribed what had been taken
+                // out of the vault.
+                const applied = [];
+                Object.keys(af).forEach(key => {
+                    const value = af[key];
+                    if (value === true) applied.push(key);
+                    else if (typeof value === 'string' && value.trim() !== '') {
+                        applied.push(`${key}=${value.trim()}`);
+                    }
+                });
+                if (this.archiveSearch.trim() !== '') {
+                    applied.push(`search=${this.archiveSearch.trim()}`);
+                }
+                context = { tab: this.archiveCycle || 'Archive',
+                            filters: applied.length ? applied.join(', ') : 'No filters' };
             } else if (moduleType === 'college') {
                 this.isExportingReferrals = true;
                 payloadIds = this.filteredCollegeReferrals.map(a => a.ticket);
-                fileName = `DMRC_College_Referrals_${new Date().toISOString().split('T')[0]}`;
+                fileName = `DMRC_College_Referrals_${this.referralTab.replace(/\s+/g, '')}_${new Date().toISOString().split('T')[0]}`;
+                context = {
+                    tab: this.referralTab,
+                    filters: this.referralSearch ? `search "${this.referralSearch}"` : 'No filters'
+                };
             } else if (moduleType === 'audit') {
                 this.isExportingAudit = true;
                 payloadIds = this.filteredAuditLogs.map(log => log.logId);
                 fileName = `DMRC_Audit_Ledger_${new Date().toISOString().split('T')[0]}`;
+                context = { tab: 'Audit Ledger', filters: this.auditSearch ? `search "${this.auditSearch}"` : 'No filters' };
             }
 
             try {
@@ -884,7 +1341,23 @@ document.addEventListener('alpine:init', () => {
                         // from this page: a view left open for an hour would
                         // otherwise be exported verbatim into a document DMRC
                         // may keep as a record.
-                        columns: moduleType === 'archive' ? this.archiveColumns : undefined
+                        columns: moduleType === 'archive' ? this.archiveColumns : undefined,
+                        // THE ARCHIVE SENDS FILTERS, NOT RECORDS. It is the one
+                        // paged module, so the server resolves what to export
+                        // rather than being handed the page on screen. The cycle
+                        // travels with them: the archive is keyed by term and
+                        // year, never by cycle id.
+                        filters: moduleType === 'archive' ? (() => {
+                            const at = this.archiveCycle.lastIndexOf(' ');
+                            return Object.assign({}, this.archiveFilters, {
+                                term: this.archiveCycle.slice(0, at),
+                                year: this.archiveCycle.slice(at + 1),
+                                search: this.archiveSearch.trim(),
+                                sortKey: this.archiveSort.key,
+                                sortDir: this.archiveSort.dir,
+                            });
+                        })() : undefined,
+                        context: context
                     })
                 });
 
@@ -900,18 +1373,15 @@ document.addEventListener('alpine:init', () => {
                 a.click();
                 a.remove();
                 window.URL.revokeObjectURL(url);
-                
-                // Only log exports of PII (Queue/Archives), avoid infinite loops logging the Audit log itself
-                if(moduleType !== 'audit') {
-                    this.auditLogs.unshift({
-                        logId: Date.now(),
-                        timestamp: new Date().toLocaleString(),
-                        actor: `${this.roleNames[this.currentRole]} [${this.currentRole}]`,
-                        category: 'SYSTEM_EXPORT',
-                        target: `Module: ${moduleType.toUpperCase()}`,
-                        details: `Exported ${payloadIds.length} records to ${format.toUpperCase()}.`
-                    });
-                }
+
+                // The ledger entry is written BY THE SERVER, inside the same
+                // request that produced the file. This used to push a row into
+                // this page's own list instead: it never reached the database,
+                // so it disappeared on refresh and no entry existed for anyone
+                // reviewing who had taken data out of the portal.
+                //
+                // Refreshed here so the new entry appears without a reload.
+                this.fetchAuditLedger();
 
             } catch (error) {
                 alert(`Export Error: ${error.message}`);
@@ -929,7 +1399,13 @@ document.addEventListener('alpine:init', () => {
         },
 
         exportArchive(format) {
-            if (!this.archiveCycle || this.filteredArchives.length === 0) { alert("No records in current view to export."); return; }
+            // Checked against the TOTAL matching the filters, not the rows on
+            // screen. Those are the same thing on page one of a small result
+            // and different on every other page.
+            if (!this.archiveCycle || this.archiveTotal === 0) {
+                alert("No records in current view to export.");
+                return;
+            }
             this.executeExport('archive', format);
         },
 
@@ -2348,7 +2824,15 @@ document.addEventListener('alpine:init', () => {
             this.forensicData.officialDocuments = [];
             
             let app = this.applications.find(a => a.ticket === ticketId);
-            if (!app) app = this.archivedApplications.find(a => a.ticket === ticketId);
+            // The archive is NOT searched here. It holds one page of rows, so
+            // this matched only when the record happened to be on the page in
+            // view -- and it is called from the Audit Ledger, which lists every
+            // cycle ever run. `app` staying undefined is handled below.
+            //
+            // This whole modal builds /media/ URLs, which return 404 on the
+            // intranet because Django serves nothing from that directory with
+            // DEBUG off. It is broken independently of the archive and needs
+            // its own fix; see SecureDocumentView for how documents are served.
 
             let modal = new bootstrap.Modal(document.getElementById('forensicDocumentModal'));
             modal.show();
@@ -2578,21 +3062,77 @@ document.addEventListener('alpine:init', () => {
         },
 
         // --- CALENDAR & UTILS ---
+        // Projects an end date from a joining date and a duration.
+        //
+        // This used to ASSUME FOUR WEEKS whenever it could not find a number in
+        // the duration text, which happens whenever the duration has not been
+        // chosen yet. An application with no duration therefore displayed and
+        // sorted as a confident four-week internship. It now returns a dash, and
+        // a dash on a new application is correct rather than broken: the
+        // database allows a not-yet-chosen duration, and the offer letter
+        // refuses to issue without one.
+        //
+        // The number of weeks is read from internship.weeks, which the server
+        // sends as a number. The old text is still accepted so that anything
+        // calling this with an older payload keeps working.
         calculateCompletionDate(dojStr, internshipObj) {
             if (!dojStr) return '—';
-            let parts = dojStr.split('-');
-            if(parts.length !== 3) return dojStr; 
-            let date = new Date(parts[0], parts[1] - 1, parts[2]);
-            let weeks = 4;
-            if (internshipObj && internshipObj.duration) {
-                let match = internshipObj.duration.match(/\d+/);
-                if (match) weeks = parseInt(match[0]);
+            let parts = String(dojStr).split('-');
+            if (parts.length !== 3) return dojStr;
+
+            let weeks = null;
+            if (internshipObj) {
+                if (typeof internshipObj.weeks === 'number') weeks = internshipObj.weeks;
+                else if (internshipObj.duration) {
+                    const match = String(internshipObj.duration).match(/\d+/);
+                    if (match) weeks = parseInt(match[0]);
+                }
             }
+            if (!weeks || weeks <= 0) return '—';
+
+            let date = new Date(parts[0], parts[1] - 1, parts[2]);
             date.setDate(date.getDate() + (weeks * 7));
             let y = date.getFullYear();
             let m = String(date.getMonth() + 1).padStart(2, '0');
             let d = String(date.getDate()).padStart(2, '0');
-            return `${y}-${m}-${d}`; 
+            return `${y}-${m}-${d}`;
+        },
+
+        // THE end date for one record, in ISO form, or '' when there is none.
+        //
+        //   1. the date STORED when the offer letter was issued, if there is
+        //      one. That is the date printed on the letter and the certificate,
+        //      so the queue now agrees with the documents -- including after an
+        //      administrator corrects it, which the old estimate ignored.
+        //   2. otherwise a projection from the joining date that matters for
+        //      this record's status, plus its duration.
+        //   3. otherwise nothing.
+        //
+        // The column on screen and the sort both read this, so a row can no
+        // longer show a dash while being ordered by a value nobody can see.
+        completionDateRaw(app) {
+            if (!app) return '';
+            if (app.completionDate) return app.completionDate;
+
+            // Nothing is projected before a date has been committed. Until then
+            // the only date available is one the candidate ASKED for, and
+            // printing an end date derived from a request reads as a promise.
+            if (['Submitted', 'Under Verification', 'Rejected', 'Intake Draft'].includes(app.status)) return '';
+
+            const doj = this.getDisplayDojValue(app);
+            if (!doj) return '';
+            const projected = this.calculateCompletionDate(doj, app.internship);
+            return projected === '—' ? '' : projected;
+        },
+
+        // The same date formatted for display: DD-MM-YYYY, a dash when unknown,
+        // and prefixed 'Est.' while it is still a projection, so nobody plans a
+        // dispatch around a date that can still move.
+        completionDateDisplay(app) {
+            const raw = this.completionDateRaw(app);
+            if (!raw) return '—';
+            if (app && app.completionDate) return this.formatDate(raw);
+            return `Est. ${this.formatDate(raw)}`;
         },
 
         getLatestResubDate(app) {
@@ -2681,56 +3221,250 @@ document.addEventListener('alpine:init', () => {
             if (this.filters.cycle) result = result.filter(app => app.cycle === this.filters.cycle);
             if (this.filters.department) result = result.filter(app => app.department === this.filters.department);
             if (this.filters.subDepartment) result = result.filter(app => app.subDepartment === this.filters.subDepartment);
-            if (this.filters.specificDoj) result = result.filter(app => app.doj === this.filters.specificDoj);
+
+            // Target DOJ is matched against THE DATE THAT MATTERS FOR THAT
+            // RECORD, not against one fixed column. This compared the requested
+            // date for everybody, so a candidate moved to a different date was
+            // still filed under the date they originally asked for, and anyone
+            // who had already joined could not be found by the date they
+            // actually arrived on.
+            if (this.filters.specificDoj) {
+                result = result.filter(app => this.getDisplayDojValue(app) === this.filters.specificDoj);
+            }
+
             if (this.filters.evaluationResult) result = result.filter(app => app.evaluationResult === this.filters.evaluationResult);
             if (this.filters.isWaitlisted) result = result.filter(app => app.waitlisted === true);
             if (this.filters.isWard) result = result.filter(app => app.ward === true);
-            if (this.filters.resubmissionType === 'Document') result = result.filter(app => app.hasUsedDocumentLifeline);
-            if (this.filters.resubmissionType === 'DOJ') result = result.filter(app => app.hasUsedDojLifeline);
-            if (this.filters.isCritical) result = result.filter(app => app.hasUsedDocumentLifeline && app.hasUsedDojLifeline);
-            if (this.filters.hasCustomOverride) result = result.filter(app => app.customOverrideFile !== null);
 
-            if (this.filters.dmraStatus) {
-                if (this.filters.dmraStatus === 'Awaiting Schedule') result = result.filter(app => !app.dmraSessionDate);
-                else if (this.filters.dmraStatus === 'Scheduled') result = result.filter(app => app.dmraSessionDate && !app.dmraAttended);
-                else if (this.filters.dmraStatus === 'Attended') result = result.filter(app => app.dmraAttended === 'true');
-                else if (this.filters.dmraStatus === 'Missed') result = result.filter(app => app.dmraAttended === 'false');
+            // WHY THESE READ rejectionCategory AND NOT hasUsedDocumentLifeline
+            // / hasUsedDojLifeline: the server sends both of those as a fixed
+            // false for every application, so the two filters that used to read
+            // them returned an empty table whatever was in the database.
+            //
+            // Those two fields are left exactly as they are. They also control
+            // the reject buttons and two row badges, and switching them on would
+            // change the reject flow -- a separate decision, not part of a
+            // filter change.
+            //
+            // rejectionCategory records WHY an application was last returned:
+            // 'Invalid Document' for a correction, 'No Show' for a new joining
+            // date. Its limit, stated plainly: it holds the LATEST reason only,
+            // so a candidate returned for documents and later for a no-show
+            // counts as a no-show here. Recording every bounce separately would
+            // need a new table.
+            //
+            // The two boxes are an EITHER/OR: ticking both shows everything that
+            // has been returned to the referrer for any reason. Read as an AND
+            // they would always come back empty, since a record carries one
+            // reason at a time.
+            if (this.filters.correctionBounce || this.filters.dojBounce) {
+                result = result.filter(app => {
+                    if (this.filters.correctionBounce && app.rejectionCategory === 'Invalid Document') return true;
+                    if (this.filters.dojBounce && app.rejectionCategory === 'No Show') return true;
+                    return false;
+                });
             }
+
+            // Has spent the one and only reschedule. dojLifelineUsed counts the
+            // rescheduled dates actually issued, and the server deliberately
+            // does NOT count a date an administrator changed -- an escalation
+            // asks an administrator to fix a date, it is not the candidate's
+            // second chance. A college candidate rescheduled by HR does count:
+            // the operational fact is the same, they cannot be given another.
+            if (this.filters.dojRescheduleUsed) result = result.filter(app => app.dojLifelineUsed === true);
 
             if (this.masterSearch.trim() !== '') {
                 const query = this.masterSearch.toUpperCase();
                 result = result.filter(app => this.matchesSearch(app, query));
             }
 
-            // Helper function for sort
-            const getCompDate = (app) => {
-                let d = this.calculateCompletionDate(app.actualDoj || app.allottedDoj, app.internship);
-                return d === '—' ? new Date(8640000000000000) : new Date(d); // Push invalid dates to the end
+            // --- SORTING -------------------------------------------------
+            //
+            // Every sort reads one value per record and compares it the same
+            // way, with ONE rule for missing values: A RECORD WITH NOTHING TO
+            // SORT BY SINKS TO THE BOTTOM, in both directions.
+            //
+            // The old code pushed unknown completion dates to the end by
+            // pretending they fell in the year 275760. That reads correctly
+            // ascending and inverts descending, so 'latest first' would have
+            // opened with a screenful of dashes. This is the same rule the
+            // Archives screen already applies, for the same reason.
+            //
+            // Dates are compared as ISO text (YYYY-MM-DD), which sorts
+            // chronologically without building a Date object for every
+            // comparison, and without an invalid date silently becoming NaN.
+            const sortValue = (app) => {
+                switch (this.sortBy) {
+                    case 'submission_asc':
+                    case 'submission_desc':
+                        return app.date || '';
+                    case 'resubmission_asc':
+                    case 'resubmission_desc':
+                        // The most recent correction or new-date response. A
+                        // record that has never been returned has none, and
+                        // sinks rather than being stood in for by its
+                        // submission date.
+                        return this.getLatestResubDate(app) || '';
+                    case 'doj_asc':
+                    case 'doj_desc':
+                        // The same status-aware date the column and the Target
+                        // DOJ filter use.
+                        return this.getDisplayDojValue(app) || '';
+                    case 'completion_asc':
+                    case 'completion_desc':
+                        return this.completionDateRaw(app) || '';
+                    case 'ticket_asc':
+                    case 'ticket_desc':
+                        return app.ticket || '';
+                    default:
+                        return '';
+                }
             };
 
-            return result.sort((a, b) => {
-                let dateA = new Date(a.date);
-                let dateB = new Date(b.date);
-                if (this.sortBy === 'submission_asc') return dateA - dateB;
-                if (this.sortBy === 'submission_desc') return dateB - dateA;
-                if (this.sortBy === 'doj_asc') return new Date(a.doj) - new Date(b.doj);
-                if (this.sortBy === 'resubmission_desc') {
-                    let resubA = this.getLatestResubDate(a);
-                    let resubB = this.getLatestResubDate(b);
-                    let valA = resubA ? new Date(resubA) : dateA;
-                    let valB = resubB ? new Date(resubB) : dateB;
-                    return valB - valA;
-                }
-                if (this.sortBy === 'completion_asc') return getCompDate(a) - getCompDate(b);
-                if (this.sortBy === 'completion_desc') return getCompDate(b) - getCompDate(a);
-                if (this.sortBy === 'ticket_asc') return a.ticket.localeCompare(b.ticket);
-                if (this.sortBy === 'ticket_desc') return b.ticket.localeCompare(a.ticket);
-                return 0;
+            const descending = this.sortBy.endsWith('_desc');
+            const direction = descending ? -1 : 1;
+
+            // Ticket numbers restart at 001 in every cycle, so DMRC-2026S-047
+            // and DMRC-2026W-047 are two unrelated people and ordering a mixed
+            // list by ticket produces a sequence that means nothing. The drawer
+            // greys the option out until a cycle is chosen; this is the same
+            // rule enforced where the sorting actually happens, so clearing the
+            // cycle while ticket order is active cannot leave a misleading list
+            // on screen.
+            const ticketOrder = this.sortBy === 'ticket_asc' || this.sortBy === 'ticket_desc';
+            if (ticketOrder && !this.filters.cycle) {
+                return [...result].sort((a, b) => {
+                    const av = a.date || '', bv = b.date || '';
+                    if (!av && !bv) return 0;
+                    if (!av) return 1;
+                    if (!bv) return -1;
+                    return av < bv ? -1 : av > bv ? 1 : 0;
+                });
+            }
+
+            return [...result].sort((a, b) => {
+                const av = sortValue(a);
+                const bv = sortValue(b);
+                if (!av && !bv) return 0;
+                if (!av) return 1;      // blanks sink, whatever the direction
+                if (!bv) return -1;
+                if (av === bv) return 0;
+                return (av < bv ? -1 : 1) * direction;
             });
         },
 
-        get pendingOffers() { return this.applications.filter(a => a.status === 'Pending Offer Letter' || a.status === 'Pending Offer Re-Approval'); },
-        get pendingCertificates() { return this.applications.filter(a => a.status === 'Pending Certificate'); },
+        // --- PAGING: THE VERIFICATION QUEUE ------------------------------
+        //
+        // processedQueue stays the FULL filtered and sorted list. Everything
+        // that must act on the whole result -- the record count, the exports --
+        // keeps reading it. Only the table reads pagedQueue.
+        get queuePageCount() {
+            return Math.max(1, Math.ceil(this.processedQueue.length / this.PAGE_SIZE));
+        },
+
+        // The page actually being shown. Clamped rather than corrected in
+        // place: a getter that writes to state re-triggers itself, and a
+        // filter that shortens the list would otherwise leave the table
+        // empty with the pager still claiming to be on page 7 of 2.
+        get queueCurrentPage() {
+            return Math.min(Math.max(1, this.queuePage), this.queuePageCount);
+        },
+
+        get pagedQueue() {
+            const start = (this.queueCurrentPage - 1) * this.PAGE_SIZE;
+            return this.processedQueue.slice(start, start + this.PAGE_SIZE);
+        },
+
+        // 'Showing 26-50 of 312'. Reads 0 of 0 on an empty result rather than
+        // '1-0 of 0'.
+        get queueRangeLabel() {
+            const total = this.processedQueue.length;
+            if (total === 0) return '0 of 0';
+            const start = (this.queueCurrentPage - 1) * this.PAGE_SIZE + 1;
+            return `${start}\u2013${Math.min(start + this.PAGE_SIZE - 1, total)} of ${total}`;
+        },
+
+        // The page numbers to offer. Every page while there are few, and a
+        // window around the current one once there are many, so the control
+        // does not grow into a second table of its own.
+        get queuePageNumbers() {
+            return this.pageNumbersFor(this.queueCurrentPage, this.queuePageCount);
+        },
+
+        goToQueuePage(page) {
+            const target = Math.min(Math.max(1, page), this.queuePageCount);
+            if (target === this.queueCurrentPage) return;
+            this.queuePage = target;
+            // A selection may only ever contain rows that are on screen. The
+            // bulk ribbon acts on everything selected, and approving people the
+            // officer can no longer see is the one outcome worth designing out.
+            this.selectedRows = [];
+        },
+
+        // --- PAGING: COLLEGE REFERRALS -----------------------------------
+        get referralPageCount() {
+            return Math.max(1, Math.ceil(this.filteredCollegeReferrals.length / this.PAGE_SIZE));
+        },
+
+        get referralCurrentPage() {
+            return Math.min(Math.max(1, this.referralPage), this.referralPageCount);
+        },
+
+        get pagedCollegeReferrals() {
+            const start = (this.referralCurrentPage - 1) * this.PAGE_SIZE;
+            return this.filteredCollegeReferrals.slice(start, start + this.PAGE_SIZE);
+        },
+
+        get referralRangeLabel() {
+            const total = this.filteredCollegeReferrals.length;
+            if (total === 0) return '0 of 0';
+            const start = (this.referralCurrentPage - 1) * this.PAGE_SIZE + 1;
+            return `${start}\u2013${Math.min(start + this.PAGE_SIZE - 1, total)} of ${total}`;
+        },
+
+        get referralPageNumbers() {
+            return this.pageNumbersFor(this.referralCurrentPage, this.referralPageCount);
+        },
+
+        goToReferralPage(page) {
+            const target = Math.min(Math.max(1, page), this.referralPageCount);
+            if (target === this.referralCurrentPage) return;
+            this.referralPage = target;
+            this.selectedRows = [];
+        },
+
+        // Shared by both pagers. Up to seven numbers, centred on the current
+        // page and pinned to the ends of the range.
+        pageNumbersFor(current, count) {
+            const WINDOW = 7;
+            if (count <= WINDOW) return Array.from({ length: count }, (_, i) => i + 1);
+            let first = Math.max(1, current - Math.floor(WINDOW / 2));
+            let last = first + WINDOW - 1;
+            if (last > count) { last = count; first = count - WINDOW + 1; }
+            return Array.from({ length: WINDOW }, (_, i) => first + i);
+        },
+
+        // Watched so that changing a tab, a filter, the sort or the search
+        // returns to page one. Without it, narrowing a 300-record list while on
+        // page 8 leaves an empty table on screen, which reads as a broken queue
+        // rather than as a filter that matched fewer records.
+        //
+        // Written as a single value rather than one watcher per control: a
+        // watcher on the filters OBJECT does not fire when a field inside it
+        // changes, and a filter added later would silently stop resetting.
+        get queueViewFingerprint() {
+            const f = this.filters;
+            return [this.activeTab, this.sortBy, this.masterSearch,
+                    f.cycle, f.department, f.subDepartment, f.specificDoj,
+                    f.evaluationResult, f.correctionBounce, f.dojBounce,
+                    f.isWaitlisted, f.isWard, f.dojRescheduleUsed].join('|');
+        },
+
+        get referralViewFingerprint() {
+            return [this.referralTab, this.referralSearch].join('|');
+        },
+
+        get pendingOffers() { return this.applications.filter(a => a.status === 'Pending Offer Letter' || a.status === 'Pending Offer Re-Approval'); },        get pendingCertificates() { return this.applications.filter(a => a.status === 'Pending Certificate'); },
         get readyForDispatch() { return this.applications.filter(a => a.status === 'Pending Dispatch'); },
 
         formatDate(isoString) {
@@ -2741,12 +3475,62 @@ document.addEventListener('alpine:init', () => {
         },
 
         clearFilters() {
-            this.filters = { cycle: '', department: '', subDepartment: '', specificDoj: '', evaluationResult: '', resubmissionType: '', dmraStatus: '', isWaitlisted: false, isWard: false, isCritical: false, hasCustomOverride: false };
+            this.filters = {
+                cycle: '', department: '', subDepartment: '', specificDoj: '', evaluationResult: '',
+                correctionBounce: false, dojBounce: false,
+                isWaitlisted: false, isWard: false, dojRescheduleUsed: false
+            };
             this.masterSearch = '';
+            // The calendar holds its own copy of the chosen date, so clearing
+            // the filter has to clear the widget too or the drawer would keep
+            // showing a date that is no longer being applied.
+            const el = document.getElementById('queueDojFilter');
+            if (el && el._flatpickr) el._flatpickr.clear();
+            // Ticket order needs a cycle. Clearing the filters removes it.
+            if (this.sortBy === 'ticket_asc' || this.sortBy === 'ticket_desc') {
+                this.sortBy = 'submission_asc';
+            }
         },
 
+        // The Target DOJ filter calendar.
+        //
+        // Built the same way as the allotment calendar in the drawer: every date
+        // is selectable and the dates an administrator approved for the cycle
+        // are highlighted. Two deliberate differences -- there is no minimum
+        // date, because a filter is normally used to look BACKWARDS at people
+        // who have already joined, and the highlight follows the cycle filter
+        // rather than one candidate's cycle.
+        initQueueDojFilterCalendar(element) {
+            if (!element) return;
+            if (element._flatpickr) element._flatpickr.destroy();
+            const fp = flatpickr(element, {
+                dateFormat: 'Y-m-d', altInput: true, altFormat: 'd-m-Y',
+                allowInput: false,
+                defaultDate: this.filters.specificDoj || null,
+                onDayCreate: (dObj, dStr, fpObj, dayElem) => {
+                    const y = dayElem.dateObj.getFullYear();
+                    const m = String(dayElem.dateObj.getMonth() + 1).padStart(2, '0');
+                    const d = String(dayElem.dateObj.getDate()).padStart(2, '0');
+                    if (this.queueApprovedDojDates.includes(`${y}-${m}-${d}`)) {
+                        dayElem.classList.add('ahr-approved-date');
+                    }
+                },
+                onChange: (dates, str) => { this.filters.specificDoj = str || ''; }
+            });
+            this.fpInstances.push(fp);
+        },
+
+        clearQueueDojFilter() {
+            this.filters.specificDoj = '';
+            const el = document.getElementById('queueDojFilter');
+            if (el && el._flatpickr) el._flatpickr.clear();
+        },
+
+        // The header tick box selects WHAT IS ON SCREEN. It used to select every
+        // record matching the filters, which with paging would mean ticking a
+        // box above 25 rows and selecting three hundred.
         toggleAllRows(event, context = 'queue') {
-            if (context === 'queue') this.selectedRows = event.target.checked ? this.processedQueue.map(app => app.ticket) : [];
+            if (context === 'queue') this.selectedRows = event.target.checked ? this.pagedQueue.map(app => app.ticket) : [];
             else if (context === 'offers') this.selectedRows = event.target.checked ? this.pendingOffers.map(app => app.ticket) : [];
             else if (context === 'certificates') this.selectedRows = event.target.checked ? this.pendingCertificates.map(app => app.ticket) : [];
         },
@@ -2976,10 +3760,14 @@ document.addEventListener('alpine:init', () => {
                     if (this.selectedApplicant) this.seedIntakeEdits();
                 }
 
-                if (!this.selectedApplicant) {
-                    this.selectedApplicant = this.archivedApplications.find(a => a.ticket === ticketId);
-                    isArchived = true;
-                }
+                // NOT SEARCHED HERE ANY MORE. `archivedApplications` holds one
+                // page of twenty-five rows, so this found a record only if it
+                // happened to be on the page in view -- and the row it found
+                // carries nine columns, not the sixty the drawer reads.
+                //
+                // Archived records are opened by openArchivedRecord(), which
+                // fetches the full record and sets isArchivedRecord from the
+                // server's answer.
 
                 // Nothing matched. Better to say so than to throw on the next
                 // line and leave the drawer half-open with stale contents.
@@ -3246,6 +4034,27 @@ document.addEventListener('alpine:init', () => {
         // forced to download -- and every open is still logged.
         async viewCertificate(variant) {
             if (!this.selectedApplicant) return;
+
+            // Same as downloadOfferLetter: an archived certificate is served
+            // from the file that was issued, because the live application row
+            // it would otherwise be rebuilt from no longer exists.
+            if (this.selectedApplicant.isArchivedRecord) {
+                const stored = this.selectedApplicant.certificate;
+                const href = this.documentHref(stored);
+                if (!href) {
+                    alert('No completion certificate is held in the archive for this record.');
+                    return;
+                }
+                if (variant === 'docx') {
+                    alert('Only the signed PDF is retained in the archive. '
+                          + 'The editable Word copy is generated on demand and is not stored.');
+                    return;
+                }
+                window.open(href, '_blank');
+                setTimeout(() => this.fetchAuditLedger(), 800);
+                return;
+            }
+
             const ticket = this.selectedApplicant.ticket;
             const emp = this.identity ? this.identity.employeeCode : '';
             const url = `http://127.0.0.1:8000/api/certificates/file/?ticket=${encodeURIComponent(ticket)}`
@@ -3377,6 +4186,38 @@ document.addEventListener('alpine:init', () => {
         // dialog, and it is downloaded to be edited, not read.
         async downloadOfferLetter(variant) {
             if (!this.selectedApplicant) return;
+
+            // AN ARCHIVED RECORD TAKES THE STORED FILE, NOT A REGENERATED ONE.
+            //
+            // /api/offer-letters/file/ rebuilds the letter from the live
+            // application row, and closing a cycle deletes that row -- so for an
+            // archived candidate this endpoint has nothing to build from and
+            // would simply fail. What survives is the signed PDF exactly as it
+            // was issued, reachable through the audited viewer.
+            //
+            // There is no Word copy to offer. That variant is generated on
+            // demand and never stored, deliberately: a signature inside a Word
+            // file can be lifted in three clicks. Said plainly rather than
+            // handing back an error.
+            if (this.selectedApplicant.isArchivedRecord) {
+                const stored = this.selectedApplicant.offerLetter;
+                const href = this.documentHref(stored);
+                if (!href) {
+                    alert('No offer letter is held in the archive for this record.');
+                    return;
+                }
+                if (variant === 'docx') {
+                    alert('Only the signed PDF is retained in the archive. '
+                          + 'The editable Word copy is generated on demand and is not stored.');
+                    return;
+                }
+                window.open(href, '_blank');
+                // Recorded server-side by the viewer; reload so the entry shows
+                // without a manual refresh.
+                setTimeout(() => this.fetchAuditLedger(), 800);
+                return;
+            }
+
             const ticket = this.selectedApplicant.ticket;
             const emp = this.identity ? this.identity.employeeCode : '';
             const url = `http://127.0.0.1:8000/api/offer-letters/file/?ticket=${encodeURIComponent(ticket)}`

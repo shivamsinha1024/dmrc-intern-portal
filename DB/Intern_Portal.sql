@@ -15,6 +15,7 @@ USE dmrc_internship_portal;
 -- The four archive/draft/requirement tables added by later migrations were
 -- missing from this list; they are included now.
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS archived_cycle_joining_dates;
 DROP TABLE IF EXISTS archived_document_requirements;
 DROP TABLE IF EXISTS archived_status_history;
 DROP TABLE IF EXISTS archived_documents;
@@ -303,7 +304,10 @@ CREATE TABLE applications (
     duration_weeks INT NULL,
     is_ward BOOLEAN DEFAULT FALSE,
     accepted_declarations BOOLEAN DEFAULT FALSE,
-    approved_by_user_id INT NULL, 
+    -- REMOVED: approved_by_user_id. A second home for a fact already recorded
+    -- better elsewhere -- who approved an application lives in
+    -- application_status_history, with the timestamp and the remarks beside
+    -- it. This column was never once populated.
     
     form_correction_remarks TEXT NULL,
     -- 'Unsatisfactory Evaluation' closes an internship that was actually served
@@ -406,7 +410,10 @@ CREATE TABLE applications (
     -- referrer portal cannot tell an actionable item from a closed one, and
     -- rejection reporting cannot separate the two. Cleared on resubmission.
     awaiting_referrer_action BOOLEAN NOT NULL DEFAULT FALSE,
-    doj_reschedule_expires_at TIMESTAMP NULL,
+    -- REMOVED: doj_reschedule_expires_at. A deadline for a rescheduled joining
+    -- date. The one-reschedule rule is enforced entirely through the count
+    -- below, and no expiry concept exists anywhere in the design -- only the
+    -- counting half was ever built.
     doj_reschedules_count INT NOT NULL DEFAULT 0,
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -417,7 +424,6 @@ CREATE TABLE applications (
     CONSTRAINT fk_app_employee FOREIGN KEY (referrer_employee_id) REFERENCES employees(employee_id),
     CONSTRAINT fk_app_dept FOREIGN KEY (department_id) REFERENCES departments(department_id),
     CONSTRAINT fk_app_cycle FOREIGN KEY (cycle_id) REFERENCES internship_cycles(cycle_id),    
-    CONSTRAINT fk_app_approver FOREIGN KEY (approved_by_user_id) REFERENCES users(user_id),
     CONSTRAINT fk_app_offer_signer FOREIGN KEY (offer_letter_signed_by_user_id) REFERENCES users(user_id),
     CONSTRAINT fk_app_certificate_signer FOREIGN KEY (certificate_signed_by_user_id) REFERENCES users(user_id),
     CONSTRAINT chk_app_duration CHECK (duration_weeks IN (4, 6, 8)),
@@ -471,7 +477,26 @@ CREATE TABLE cycle_document_requirements (
     requirement_id INT AUTO_INCREMENT PRIMARY KEY,
     cycle_id INT NOT NULL,
     doc_type_id INT NOT NULL,
+    -- ALL THREE SETTINGS BELONG TO THE CYCLE, not to the document.
+    --
+    -- DMRC runs concurrent cycles. is_enabled and allowed_extensions once lived
+    -- only on document_types, where they were GLOBAL: switching off "Letter of
+    -- Recommendation" for Summer 2027 also removed it from Winter 2026,
+    -- silently, because the configuration screen shows one cycle at a time.
+    -- Every Winter application submitted afterwards stopped being asked for a
+    -- document Winter still required.
+    --
+    -- The columns of the same name on document_types remain, and are now the
+    -- catalogue DEFAULT copied in when a document is first added to a cycle.
+    -- Changing them must never alter a cycle already configured.
+    --
+    -- ADDED BY migration_02_per_cycle_document_config.sql AND MISSED HERE. Any
+    -- database built from this script alone was missing both, while views.py
+    -- reads them in eleven places -- so a fresh install would have failed the
+    -- moment anyone opened a cycle's document configuration.
     is_mandatory BOOLEAN DEFAULT TRUE,
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    allowed_extensions VARCHAR(100) NULL,
     CONSTRAINT fk_req_cycle FOREIGN KEY (cycle_id) REFERENCES internship_cycles(cycle_id) ON DELETE CASCADE,
     CONSTRAINT fk_req_doc FOREIGN KEY (doc_type_id) REFERENCES document_types(doc_type_id) ON DELETE CASCADE,
     UNIQUE (cycle_id, doc_type_id)
@@ -600,17 +625,21 @@ CREATE TABLE joining_details (
     requested_doj DATE NULL,
     allotted_date_of_joining DATE NULL,
     allotted_sub_department_id INT NULL,
-    reporting_time TIME NULL,
-    reporting_officer_id INT NULL, 
-    assigned_room_location VARCHAR(100) NULL,
-    documents_to_carry TEXT NULL, 
+    -- REMOVED: reporting_time, reporting_officer_id, assigned_room_location
+    -- and documents_to_carry. Joining instructions from an earlier design --
+    -- what time to arrive, who to report to, which room, what to bring.
+    --
+    -- Nothing could ever print them. The document builders in portal/documents/
+    -- receive a plain context dictionary carrying the application code, dates,
+    -- course, college, duration, sub-department and signatory, and nothing
+    -- else; and the offer letter is addressed to the Head of Department rather
+    -- than to the candidate. All four were empty in every row.
     actual_date_of_joining DATE NULL,
     dmra_session_date DATE NULL,
     dmra_attended BOOLEAN NULL,
     date_of_completion DATE NULL,
     CONSTRAINT fk_joining_app FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
-    CONSTRAINT fk_joining_subdept FOREIGN KEY (allotted_sub_department_id) REFERENCES sub_departments(sub_department_id),
-    CONSTRAINT fk_joining_officer FOREIGN KEY (reporting_officer_id) REFERENCES employees(employee_id)
+    CONSTRAINT fk_joining_subdept FOREIGN KEY (allotted_sub_department_id) REFERENCES sub_departments(sub_department_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ==============================================================================
@@ -675,10 +704,23 @@ CREATE TABLE archived_applications (
     original_application_id INT NOT NULL,
     application_code VARCHAR(50) NULL,
     dmrc_reference_code VARCHAR(50) NULL,
+    -- THE CANDIDATE, IN FULL.
+    --
+    -- The archived record is now displayed through the SAME drawer as a live
+    -- application, so every field that drawer shows has to survive archiving.
+    -- These seven used to be discarded at closure: the drawer would open on an
+    -- archived candidate with the whole personal block reading blank.
+    student_salutation VARCHAR(10) NULL,
     student_name VARCHAR(150) NOT NULL,
+    student_fathers_name VARCHAR(150) NULL,
+    student_gender VARCHAR(6) NULL,
+    student_date_of_birth DATE NULL,
     student_email VARCHAR(150) NOT NULL,
     student_mobile VARCHAR(20) NULL,
     student_aadhaar VARCHAR(12) NULL,
+    student_permanent_address TEXT NULL,
+    student_emergency_contact_name VARCHAR(150) NULL,
+    student_emergency_contact_mobile VARCHAR(20) NULL,
     college_name VARCHAR(200) NOT NULL,
     -- A college referral rejected before its form was filled is archived with
     -- these fields still empty, so the archive must accept them blank.
@@ -698,9 +740,19 @@ CREATE TABLE archived_applications (
     referral_source VARCHAR(50) NULL,
     referrer_name VARCHAR(150) NULL,
     referrer_employee_code VARCHAR(50) NULL,
+    -- The referrer's post and unit AS THEY WERE, by name. An employee is
+    -- promoted or transferred and the directory moves with them, but the record
+    -- of who sponsored this candidate must not: the drawer shows these three
+    -- lines together and they have to agree with each other years later.
+    referrer_designation VARCHAR(100) NULL,
+    referrer_department VARCHAR(100) NULL,
     referrer_notification_email VARCHAR(150) NULL, -- NEW FIELD FOR EMAIL NOTIFICATIONS
-    -- Both dates are kept: a candidate scheduled and then rejected never joined,
-    -- so actual is empty while the date they were told to report still matters.
+    -- Three dates, not two. REQUESTED is what the referrer asked for, ALLOTTED
+    -- is what HR granted, ACTUAL is when they walked in. A candidate scheduled
+    -- and then rejected never joined, so actual is empty while the date they
+    -- were told to report on still matters -- and the gap between requested and
+    -- allotted is the record of a scheduling decision somebody made.
+    requested_date_of_joining DATE NULL,
     allotted_date_of_joining DATE NULL,
     actual_date_of_joining DATE NULL,
     dmra_session_date DATE NULL,
@@ -715,26 +767,79 @@ CREATE TABLE archived_applications (
     -- signed it.
     offer_letter_issued_at DATETIME NULL,
     offer_letter_signed_by_name VARCHAR(150) NULL,
+    offer_letter_signed_by_designation VARCHAR(100) NULL,
+
+    -- HANDOVER. The two hard-copy declarations HR-OPS collects on the intern's
+    -- first day. These are PHYSICAL documents -- nothing is uploaded, so the
+    -- tick is the only record that they were ever collected, and it has to
+    -- survive closure or the archive cannot answer whether they were.
+    hardcopy_undertaking_received BOOLEAN NOT NULL DEFAULT FALSE,
+    hardcopy_attendance_received BOOLEAN NOT NULL DEFAULT FALSE,
+    handover_completed_at DATETIME NULL,
 
     -- The clearance record and who signed the certificate. Kept by NAME for the
     -- reason every other actor is: staff leave, accounts are removed, and an
     -- archived certificate must still say who signed it.
+    --
+    -- THE FIVE BELOW EXISTED AND WERE NEVER WRITTEN. archive_cycle_records
+    -- populated the offer-letter fields and skipped these, so every intern who
+    -- actually completed was archived with no evaluation, no project title and
+    -- no record of who signed their certificate. Archiving is irreversible, so
+    -- that was destroyed at closure rather than merely hidden.
     mentor_evaluation_result VARCHAR(20) NULL,
     mentor_evaluation_remarks TEXT NULL,
     project_report_title VARCHAR(255) NULL,
+    attendance_record_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    project_report_verified BOOLEAN NOT NULL DEFAULT FALSE,
     certificate_issued_at DATETIME NULL,
     certificate_signed_by_name VARCHAR(150) NULL,
-    
+    certificate_signed_by_designation VARCHAR(100) NULL,
+
+    -- DISPATCH. 'Pending' | 'Sent' | 'Failed'. Kept because 'Pending' is a real
+    -- and useful answer: it means the certificate was issued but the email was
+    -- never actually sent, and after closure this is the only place that fact
+    -- survives.
+    certificate_dispatched_at DATETIME NULL,
+    certificate_email_status VARCHAR(7) NULL,
+
+    -- What HR-APP wrote when returning an application for correction. Part of
+    -- the drawer, and for a rejected candidate often the clearest statement of
+    -- what went wrong.
+    form_correction_remarks TEXT NULL,
+
     approval_reference_id VARCHAR(100) NULL,
     is_admin_escalated BOOLEAN DEFAULT FALSE,
     
     is_resubmitted BOOLEAN DEFAULT FALSE,
-    doj_reschedule_expires_at TIMESTAMP NULL,
+    -- REMOVED: doj_reschedule_expires_at, with the live column it mirrored.
+    -- An archive field recording something the system has no concept of is
+    -- worse than no field at all.
     doj_reschedules_count INT NOT NULL DEFAULT 0,
     
     archived_year INT NOT NULL,
     created_at TIMESTAMP NOT NULL,
-    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    -- INDEXES.
+    --
+    -- This table had NONE, while all four of its child tables had them. That
+    -- was survivable while the archive screen loaded a whole cycle into the
+    -- browser and filtered it there. Filtering now happens HERE, in SQL, over
+    -- every year DMRC has ever run -- so without these, each filter is a full
+    -- scan of the largest table in the database, and the archive gets slower
+    -- every year in a way nothing in testing would reveal.
+    --
+    -- The first is the one that matters most: every archive query begins by
+    -- narrowing to one cycle, and the archive is keyed by TERM AND YEAR rather
+    -- than by cycle id, because internship_cycles rows are not guaranteed to
+    -- outlive the records.
+    INDEX idx_arch_app_cycle (session_term, application_year),
+    INDEX idx_arch_app_cycle_status (session_term, application_year, status),
+    INDEX idx_arch_app_code (application_code),
+    INDEX idx_arch_app_original (original_application_id),
+    INDEX idx_arch_app_department (department_name),
+    INDEX idx_arch_app_doj (actual_date_of_joining),
+    INDEX idx_arch_app_completion (date_of_completion)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Explicitly defining these rather than using "LIKE" to decouple live foreign keys
@@ -747,7 +852,10 @@ CREATE TABLE archived_academic_details (
     branch_name VARCHAR(100) NULL,
     current_semester VARCHAR(20) NULL,
     grading_system VARCHAR(20) NULL,
-    current_score DECIMAL(5,2) NULL
+    current_score DECIMAL(5,2) NULL,
+    -- Looked up by application every time a drawer opens. Without this, opening
+    -- one archived record scans the whole table.
+    INDEX idx_arch_acad_app (original_application_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Uploaded files STAY on disk under PROTECTED_DOCUMENT_ROOT when a cycle is
@@ -763,6 +871,14 @@ CREATE TABLE archived_documents (
     original_application_id INT NOT NULL,
     original_document_id INT NULL,
     application_code VARCHAR(50) NULL,
+    -- The document type's ID, recorded as a PLAIN NUMBER and deliberately NOT a
+    -- foreign key -- the type may since have been disabled or deleted, and none
+    -- of that may make this record unreadable.
+    --
+    -- It is here because the drawer matches a file to its requirement slot by a
+    -- key built from this id. Storing only the NAME meant an archived record
+    -- showed every requirement as unsupplied while the file sat right there.
+    doc_type_id INT NULL,
     doc_type_name VARCHAR(100) NOT NULL, 
     file_path VARCHAR(500) NOT NULL,
     version INT NOT NULL DEFAULT 1,
@@ -772,7 +888,8 @@ CREATE TABLE archived_documents (
     hr_remarks TEXT NULL,
     uploaded_at TIMESTAMP NOT NULL,
     INDEX idx_arch_doc_original (original_document_id),
-    INDEX idx_arch_doc_code (application_code)
+    INDEX idx_arch_doc_code (application_code),
+    INDEX idx_arch_doc_app (original_application_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------------------------
@@ -825,6 +942,10 @@ CREATE TABLE archived_document_requirements (
     archive_requirement_id INT AUTO_INCREMENT PRIMARY KEY,
     original_application_id INT NOT NULL,
     application_code VARCHAR(50) NULL,
+    -- Same reasoning as archived_documents.doc_type_id: a plain number, never a
+    -- foreign key, carried so the drawer can pair a requirement with the file
+    -- that satisfied it. The NAME below remains the thing displayed.
+    doc_type_id INT NULL,
     doc_type_name VARCHAR(100) NOT NULL,
     allowed_extensions VARCHAR(100) NULL,
     is_mandatory BOOLEAN NOT NULL DEFAULT TRUE,
@@ -834,6 +955,45 @@ CREATE TABLE archived_document_requirements (
     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_arch_req_app (original_application_id),
     INDEX idx_arch_req_code (application_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------------------------
+-- ARCHIVED JOINING CALENDAR
+--
+-- The joining dates an administrator APPROVED for a cycle, frozen at closure.
+--
+-- The archive screen's Date of Joining filter is the same calendar widget used
+-- everywhere else in the portal, and it marks three different kinds of day:
+--
+--     approved and used        a normal intake date
+--     approved, never used     offered, nobody was allotted it
+--     used but NEVER approved  an exception was made for that candidate
+--
+-- The third is the reason this table earns its place. HR may allot ANY date when
+-- scheduling, including one outside the approved calendar, and after closure
+-- this is the only way to see that it happened.
+--
+-- SNAPSHOT, not a link. Archiving does not delete internship_cycles or
+-- cycle_joining_dates -- it only sets is_active = 0 -- so the live rows do
+-- survive today and could in principle be read instead. They are copied here
+-- anyway, for the reason every archived table copies rather than links: a
+-- future tidy-up of old cycle rows would blank this calendar while the records
+-- it describes sat there perfectly intact.
+--
+-- Keyed by TERM AND YEAR, as every archived table is.
+--
+-- was_enabled records whether the date was still active at closure. A date an
+-- administrator WITHDREW mid-cycle can still have people allotted to it, so
+-- dropping the withdrawn ones would misreport those candidates as exceptions.
+-- ------------------------------------------------------------------------------
+CREATE TABLE archived_cycle_joining_dates (
+    archive_doj_id INT AUTO_INCREMENT PRIMARY KEY,
+    session_term VARCHAR(20) NOT NULL,
+    application_year INT NOT NULL,
+    allowed_doj DATE NOT NULL,
+    was_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_arch_doj_cycle (session_term, application_year)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ==============================================================================
@@ -945,7 +1105,9 @@ CREATE OR REPLACE VIEW vw_hr_application_status_tracker AS
 SELECT 
     a.application_id AS id, s.full_name, a.status, a.referral_source, a.is_waitlisted, a.is_no_show, 
     a.is_ward AS is_employee_ward, a.is_resubmitted, 
-    a.doj_reschedule_expires_at, a.doj_reschedules_count, 
+    -- doj_reschedule_expires_at was dropped with the column: no expiry concept
+    -- exists in the design, only the count below.
+    a.doj_reschedules_count, 
     a.referrer_notification_email, 
     d.department_name, a.created_at, 
     'Live' AS record_source, ic.application_year AS report_year, ic.session_term AS cycle_name 
@@ -957,7 +1119,7 @@ UNION ALL
 SELECT 
     original_application_id AS id, student_name AS full_name, status, referral_source, is_waitlisted, is_no_show, 
     is_employee_ward, is_resubmitted, 
-    doj_reschedule_expires_at, doj_reschedules_count, 
+    doj_reschedules_count, 
     referrer_notification_email, 
     department_name, created_at, 
     'Archived' AS record_source, archived_year AS report_year, session_term AS cycle_name 

@@ -78,7 +78,9 @@ class Applications(models.Model):
     duration_weeks = models.IntegerField(blank=True, null=True)
     is_ward = models.IntegerField(blank=True, null=True)
     accepted_declarations = models.IntegerField(blank=True, null=True)
-    approved_by_user = models.ForeignKey('Users', models.DO_NOTHING, blank=True, null=True)
+    # approved_by_user was REMOVED: a second home for a fact already recorded
+    # better elsewhere. Who approved an application lives in
+    # ApplicationStatusHistory, with the timestamp and remarks beside it.
     form_correction_remarks = models.TextField(blank=True, null=True)
     # 'Invalid Document' | 'No Show' | 'Withdrawn' | 'Other' |
     # 'Unsatisfactory Evaluation'. The last closes an internship that was
@@ -157,7 +159,8 @@ class Applications(models.Model):
     # TRUE while a Rejected application is parked with the referrer awaiting a
     # correction or no-show response. Cleared when the referrer resubmits.
     awaiting_referrer_action = models.IntegerField(default=0)
-    doj_reschedule_expires_at = models.DateTimeField(blank=True, null=True)
+    # doj_reschedule_expires_at was REMOVED: no expiry concept exists in the
+    # design. The one-reschedule rule runs entirely off the count below.
     doj_reschedules_count = models.IntegerField()
     created_at = models.DateTimeField(blank=True, null=True)
     updated_at = models.DateTimeField(blank=True, null=True)
@@ -189,10 +192,20 @@ class ArchivedApplications(models.Model):
     original_application_id = models.IntegerField()
     application_code = models.CharField(max_length=50, blank=True, null=True)
     dmrc_reference_code = models.CharField(max_length=50, blank=True, null=True)
+    # THE CANDIDATE, IN FULL. An archived record is shown through the SAME
+    # drawer as a live application, so every field that drawer displays has to
+    # survive archiving. The seven added here used to be discarded at closure.
+    student_salutation = models.CharField(max_length=10, blank=True, null=True)
     student_name = models.CharField(max_length=150)
+    student_fathers_name = models.CharField(max_length=150, blank=True, null=True)
+    student_gender = models.CharField(max_length=6, blank=True, null=True)
+    student_date_of_birth = models.DateField(blank=True, null=True)
     student_email = models.CharField(max_length=150)
     student_mobile = models.CharField(max_length=20, blank=True, null=True)
     student_aadhaar = models.CharField(max_length=12, blank=True, null=True)
+    student_permanent_address = models.TextField(blank=True, null=True)
+    student_emergency_contact_name = models.CharField(max_length=150, blank=True, null=True)
+    student_emergency_contact_mobile = models.CharField(max_length=20, blank=True, null=True)
     college_name = models.CharField(max_length=200)
     # A referral rejected before its form was filled archives with these blank.
     branch_name = models.CharField(max_length=100, blank=True, null=True)
@@ -210,10 +223,18 @@ class ArchivedApplications(models.Model):
     referral_source = models.CharField(max_length=50, blank=True, null=True)
     referrer_name = models.CharField(max_length=150, blank=True, null=True)
     referrer_employee_code = models.CharField(max_length=50, blank=True, null=True)
+    # The referrer's post and unit AS THEY WERE. An employee is promoted or
+    # transferred and the directory moves with them; the record of who
+    # sponsored this candidate must not.
+    referrer_designation = models.CharField(max_length=100, blank=True, null=True)
+    referrer_department = models.CharField(max_length=100, blank=True, null=True)
     referrer_notification_email = models.CharField(max_length=150, blank=True, null=True)
-    # Both dates are kept: a candidate scheduled and then rejected never
-    # joined, so actual is empty while the date they were told to report on
-    # still matters.
+    # Three dates. REQUESTED is what the referrer asked for, ALLOTTED is what HR
+    # granted, ACTUAL is when they walked in. A candidate scheduled and then
+    # rejected never joined, so actual is empty while the date they were told to
+    # report on still matters -- and the gap between the first two is the record
+    # of a scheduling decision somebody made.
+    requested_date_of_joining = models.DateField(blank=True, null=True)
     allotted_date_of_joining = models.DateField(blank=True, null=True)
     actual_date_of_joining = models.DateField(blank=True, null=True)
     dmra_session_date = models.DateField(blank=True, null=True)
@@ -225,18 +246,42 @@ class ArchivedApplications(models.Model):
     # are removed, but an archived letter must still say who signed it.
     offer_letter_issued_at = models.DateTimeField(blank=True, null=True)
     offer_letter_signed_by_name = models.CharField(max_length=150, blank=True, null=True)
+    offer_letter_signed_by_designation = models.CharField(max_length=100, blank=True, null=True)
+    # HANDOVER. The two hard-copy declarations collected on the first day. These
+    # are physical documents: nothing is uploaded, so the tick IS the record and
+    # it has to survive closure or the archive cannot answer whether they were
+    # ever collected.
+    hardcopy_undertaking_received = models.BooleanField(default=False)
+    hardcopy_attendance_received = models.BooleanField(default=False)
+    handover_completed_at = models.DateTimeField(blank=True, null=True)
     # The clearance record and who signed the certificate, kept by NAME for the
     # reason every archived actor is: staff leave and accounts are removed, but
     # an archived certificate must still say who signed it.
+    #
+    # THESE EXISTED AND WERE NEVER WRITTEN. archive_cycle_records populated the
+    # offer-letter fields and skipped these, so every intern who completed was
+    # archived with no evaluation, no project title and no record of who signed
+    # their certificate -- destroyed at closure, not merely hidden.
     mentor_evaluation_result = models.CharField(max_length=20, blank=True, null=True)
     mentor_evaluation_remarks = models.TextField(blank=True, null=True)
     project_report_title = models.CharField(max_length=255, blank=True, null=True)
+    attendance_record_verified = models.BooleanField(default=False)
+    project_report_verified = models.BooleanField(default=False)
     certificate_issued_at = models.DateTimeField(blank=True, null=True)
     certificate_signed_by_name = models.CharField(max_length=150, blank=True, null=True)
+    certificate_signed_by_designation = models.CharField(max_length=100, blank=True, null=True)
+    # DISPATCH. 'Pending' is a real answer: the certificate was issued but the
+    # email was never sent. After closure this is the only place that survives.
+    certificate_dispatched_at = models.DateTimeField(blank=True, null=True)
+    certificate_email_status = models.CharField(max_length=7, blank=True, null=True)
+    # What HR-APP wrote when returning an application. For a rejected candidate
+    # this is often the clearest statement of what went wrong.
+    form_correction_remarks = models.TextField(blank=True, null=True)
     approval_reference_id = models.CharField(max_length=100, blank=True, null=True)
     is_admin_escalated = models.IntegerField(blank=True, null=True)
     is_resubmitted = models.IntegerField(blank=True, null=True)
-    doj_reschedule_expires_at = models.DateTimeField(blank=True, null=True)
+    # doj_reschedule_expires_at was REMOVED: no expiry concept exists in the
+    # design. The one-reschedule rule runs entirely off the count below.
     doj_reschedules_count = models.IntegerField()
     archived_year = models.IntegerField()
     created_at = models.DateTimeField()
@@ -259,6 +304,12 @@ class ArchivedDocuments(models.Model):
     original_document_id = models.IntegerField(blank=True, null=True)
     application_code = models.CharField(max_length=50, blank=True, null=True)
     is_system_generated = models.BooleanField(default=False)
+    # A PLAIN NUMBER, deliberately not a foreign key: the type may since have
+    # been disabled or deleted and that may not make this record unreadable.
+    # Carried because the drawer matches a file to its requirement slot by a key
+    # built from this id -- with only the NAME stored, an archived record showed
+    # every requirement as unsupplied while the file sat right there.
+    doc_type_id = models.IntegerField(blank=True, null=True)
     doc_type_name = models.CharField(max_length=100)
     file_path = models.CharField(max_length=500)
     # Mirrors documents.version so an archived record still shows which revision
@@ -499,10 +550,11 @@ class JoiningDetails(models.Model):
     requested_doj = models.DateField(blank=True, null=True)
     allotted_date_of_joining = models.DateField(blank=True, null=True)
     allotted_sub_department = models.ForeignKey('SubDepartments', models.DO_NOTHING, blank=True, null=True)
-    reporting_time = models.TimeField(blank=True, null=True)
-    reporting_officer = models.ForeignKey(Employees, models.DO_NOTHING, blank=True, null=True)
-    assigned_room_location = models.CharField(max_length=100, blank=True, null=True)
-    documents_to_carry = models.TextField(blank=True, null=True)
+    # REMOVED: reporting_time, reporting_officer, assigned_room_location and
+    # documents_to_carry -- joining instructions from an earlier design. The
+    # document builders receive a plain context dictionary that never carried
+    # any of them, and the offer letter is addressed to the Head of Department
+    # rather than to the candidate.
     actual_date_of_joining = models.DateField(blank=True, null=True)
     dmra_session_date = models.DateField(blank=True, null=True)
     dmra_attended = models.IntegerField(blank=True, null=True)
@@ -682,6 +734,10 @@ class ArchivedDocumentRequirements(models.Model):
     archive_requirement_id = models.AutoField(primary_key=True)
     original_application_id = models.IntegerField()
     application_code = models.CharField(max_length=50, blank=True, null=True)
+    # Same reasoning as ArchivedDocuments.doc_type_id: a plain number, never a
+    # link, carried so the drawer can pair a requirement with the file that
+    # satisfied it. The NAME below remains the thing displayed.
+    doc_type_id = models.IntegerField(blank=True, null=True)
     doc_type_name = models.CharField(max_length=100)
     allowed_extensions = models.CharField(max_length=100, blank=True, null=True)
     is_mandatory = models.BooleanField(default=True)
@@ -693,3 +749,39 @@ class ArchivedDocumentRequirements(models.Model):
     class Meta:
         managed = False
         db_table = 'archived_document_requirements'
+
+
+class ArchivedCycleJoiningDates(models.Model):
+    """The joining dates an administrator APPROVED for a cycle, frozen at close.
+
+    The archive's Date of Joining filter is the same calendar used everywhere
+    else in the portal, and it marks three kinds of day:
+
+        approved and used        a normal intake date
+        approved, never used     offered, nobody was allotted it
+        used but NEVER approved  an exception was made for that candidate
+
+    The third is why this table exists. HR may allot ANY date when scheduling,
+    including one outside the approved calendar, and after closure this is the
+    only way to see that it happened.
+
+    A SNAPSHOT, not a link. Archiving does not delete internship_cycles or
+    cycle_joining_dates -- it only sets is_active = 0 -- so the live rows do
+    survive today. They are copied anyway, for the reason every archived table
+    copies rather than links: a future tidy-up of old cycle rows would blank
+    this calendar while the records it describes sat there perfectly intact.
+
+    was_enabled records whether the date was still active at closure. A date an
+    administrator WITHDREW mid-cycle can still have people allotted to it, so
+    dropping the withdrawn ones would misreport those candidates as exceptions.
+    """
+    archive_doj_id = models.AutoField(primary_key=True)
+    session_term = models.CharField(max_length=20)
+    application_year = models.IntegerField()
+    allowed_doj = models.DateField()
+    was_enabled = models.BooleanField(default=True)
+    archived_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'archived_cycle_joining_dates'

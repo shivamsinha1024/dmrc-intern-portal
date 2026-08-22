@@ -63,6 +63,11 @@ def env_list(name, default=()):
 # modes then land the right way round: forget to configure something locally and
 # nothing happens, forget it in production and the server refuses to start and
 # says why. Setting DEBUG explicitly in .env overrides this either way.
+#
+# DEPLOYMENT NOTE: set DEBUG=False explicitly in .env on any server. Without it,
+# anyone who starts this with `manage.py runserver` -- to smoke-test the install,
+# say -- silently turns DEBUG back on, which disables both production checks at
+# the end of this file and re-enables the development identity provider.
 RUNNING_VIA_MANAGE_PY = os.path.basename(sys.argv[0] or '') == 'manage.py'
 
 DEBUG = env_flag('DEBUG', default=RUNNING_VIA_MANAGE_PY)
@@ -132,8 +137,48 @@ TEMPLATES = [
 WSGI_APPLICATION = 'dmrc_core.wsgi.application'
 
 
-# Database
+# ==============================================================================
+# DATABASE
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
+#
+# TRANSPORT SECURITY
+#
+# TiDB Cloud, used during development, requires an encrypted connection and a CA
+# bundle. A MySQL server on an internal network frequently requires neither. This
+# used to be hardcoded -- an encrypted connection using a CA file at
+# /etc/ssl/cert.pem for any host that was not exactly 'localhost' -- with no way
+# to change it from .env. That path is the macOS one; on Linux the bundle is
+# usually /etc/ssl/certs/ca-certificates.crt, so as written it could not connect
+# on a deployed server at all.
+#
+# It is now configuration:
+#
+#   DB_SSL=False                 plain connection (typical for internal MySQL)
+#   DB_SSL=True                  encrypted, using DB_SSL_CA below
+#   DB_SSL_CA=/path/to/ca.pem    Linux:  /etc/ssl/certs/ca-certificates.crt
+#                                macOS:  /etc/ssl/cert.pem
+#
+# The DEFAULT preserves the previous behaviour -- encryption for any host that is
+# not local -- so nothing changes for an existing development setup. A local host
+# now also covers 127.0.0.1 and an unset DB_HOST, which previously fell through
+# to requiring TLS against a server that was unlikely to offer it.
+# ==============================================================================
+
+DB_HOST = os.environ.get('DB_HOST', '')
+
+_DB_HOST_IS_LOCAL = DB_HOST.strip().lower() in ('localhost', '127.0.0.1', '::1', '')
+
+DB_SSL = env_flag('DB_SSL', default=not _DB_HOST_IS_LOCAL)
+
+# Path to the CA bundle used to verify the database server's certificate. Only
+# read when DB_SSL is on. Left empty, the connection is encrypted without
+# verifying the server certificate -- acceptable on a closed internal network,
+# not on anything else.
+DB_SSL_CA = os.environ.get('DB_SSL_CA', '/etc/ssl/cert.pem').strip()
+
+DB_OPTIONS = {}
+if DB_SSL:
+    DB_OPTIONS['ssl'] = {'ca': DB_SSL_CA} if DB_SSL_CA else {'ssl': True}
 
 DATABASES = {
     'default': {
@@ -141,12 +186,9 @@ DATABASES = {
         'NAME': os.environ.get('DB_NAME'),
         'USER': os.environ.get('DB_USER'),
         'PASSWORD':  os.environ.get('DB_PASSWORD'),
-        'HOST': os.environ.get('DB_HOST'),
+        'HOST': DB_HOST,
         'PORT': os.environ.get('DB_PORT', '4000'),
-        'OPTIONS': {
-            # This is crucial for cloud databases like TiDB to prevent timeout drops
-            'ssl': {'ca': '/etc/ssl/cert.pem'} if os.environ.get('DB_HOST') != 'localhost' else {}
-        },
+        'OPTIONS': DB_OPTIONS,
     }
 }
 
@@ -187,6 +229,12 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Where `manage.py collectstatic` gathers static files for a web server to
+# serve. Without this set, that command fails outright once DEBUG is off. The
+# two portals are served as plain files by the web server and do not depend on
+# it; it exists so a standard deployment step does not error.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
@@ -198,6 +246,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # website an employee happens to visit call this API as them. In production set
 # CORS_ALLOW_ALL_ORIGINS=False and list the portal's own address in
 # CORS_ALLOWED_ORIGINS.
+#
+# If the web server serves the portal pages and forwards /api/ to this
+# application from the SAME address, the requests are no longer cross-origin and
+# neither setting applies. That is the simpler arrangement and the recommended
+# one.
 CORS_ALLOW_ALL_ORIGINS = env_flag('CORS_ALLOW_ALL_ORIGINS', default=DEBUG)
 CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS')
 
@@ -327,6 +380,71 @@ SIGNATURE_MAX_SIZE_MB = 2
 # Candidates never need a link: the offer letter is handed over on paper.
 # ==============================================================================
 GENERATED_DOCUMENT_ROOT = BASE_DIR / 'generated_documents'
+
+# ==============================================================================
+# LOGGING
+#
+# With DEBUG off, an unhandled error returns a bare "Server Error (500)" to the
+# user and the detail goes wherever the application server happens to send it --
+# frequently nowhere anybody looks. The first production fault then arrives as
+# "HR says the button does not work", with no trail behind it.
+#
+# So errors are written to a file as well as the console. The file rotates at
+# 5 MB and keeps five old copies, which bounds disk use without anybody having
+# to remember to prune it.
+#
+# LOG_DIR may be set in .env to point at a central location if DMRC has one.
+# Whatever directory it names must be writable by the account running the
+# application. Exclude it from version control.
+# ==============================================================================
+LOG_DIR = Path(os.environ.get('LOG_DIR') or (BASE_DIR / 'logs'))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{asctime} {levelname} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'file': {
+            'level': 'WARNING',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(LOG_DIR / 'portal.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 5,
+            'formatter': 'verbose',
+            'encoding': 'utf-8',
+        },
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        # Unhandled exceptions in a view arrive here.
+        'django.request': {
+            'handlers': ['file', 'console'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+        'django': {
+            'handlers': ['file', 'console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        # Anything this project logs itself.
+        'portal': {
+            'handlers': ['file', 'console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
 
 # ==============================================================================
 # PRODUCTION SAFETY CHECKS

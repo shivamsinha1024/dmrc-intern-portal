@@ -5,6 +5,7 @@ from .views import (
     UniversalExportAPIView, HRDocumentOverrideAPIView, CurrentUserAPIView,
     ApplicationDraftAPIView, DraftDocumentAPIView, PortalBootstrapAPIView,
     SecureDocumentView, CollegeReferralAPIView, HRArchiveAPIView,
+    HRArchiveRecordAPIView,
     SignatureAPIView, SignatureImageView, OfferLetterAPIView,
     OfferLetterCorrectionAPIView, OfferHandoverAPIView,
     DMRASessionAPIView, ClearanceAPIView, CertificateAPIView,
@@ -32,9 +33,15 @@ urlpatterns = [
     # /api/hr/queue/ until they are marked as arrived.
     path('api/college-referrals/', CollegeReferralAPIView.as_view(), name='college-referrals'),
     path('api/hr/action/', HRApplicationActionAPIView.as_view(), name='hr-action'),
-    # Applications belonging to closed cycles. Replaces the two specimen
-    # records the dashboard used to display as though they were real interns.
+    # Applications belonging to closed cycles. Filtered, sorted and PAGED on
+    # the server: a cycle holds hundreds or thousands of records, and the screen
+    # used to fetch and serialise every one of them to draw twenty-five.
     path('api/hr/archives/', HRArchiveAPIView.as_view(), name='hr-archives'),
+    # ONE archived record, in the shape the live drawer consumes. Separate
+    # because it is the expensive half -- documents, requirements, timeline and
+    # academic details -- and building that for a whole cycle just in case one
+    # record was opened is what made the archive screen unusable.
+    path('api/hr/archives/record/', HRArchiveRecordAPIView.as_view(), name='hr-archive-record'),
     path('api/hr/documents/override/', HRDocumentOverrideAPIView.as_view(), name='hr-doc-override'),
 
     # ==========================================================================

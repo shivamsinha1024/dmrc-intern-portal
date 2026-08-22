@@ -27,7 +27,8 @@
 --   application_status_history, application_document_requirements
 --   notifications, system_audit_logs, application_drafts
 --   archived_applications, archived_academic_details, archived_documents,
---   archived_status_history, archived_document_requirements
+--   archived_status_history, archived_document_requirements,
+--   archived_cycle_joining_dates
 --   internship_cycles  AND its capacities, joining dates, sub-department and
 --                      document-requirement rows
 --
@@ -73,6 +74,11 @@ USE dmrc_internship_portal;
 -- hard-close. Without these two the reset would leave orphaned timelines and
 -- requirement rows pointing at applications that no longer exist -- invisible
 -- in the interface, but they would surface in any later archive query.
+-- The cycle's approved joining calendar, snapshotted at closure. Added with
+-- the archive rebuild; without this line a factory reset would leave the
+-- calendars of cycles whose records it had just deleted.
+DELETE FROM archived_cycle_joining_dates;
+
 DELETE FROM archived_status_history;
 DELETE FROM archived_document_requirements;
 DELETE FROM archived_documents;
@@ -204,6 +210,7 @@ SELECT
   (SELECT COUNT(*) FROM applications)               AS applications,
   (SELECT COUNT(*) FROM archived_status_history)    AS arch_timeline,
   (SELECT COUNT(*) FROM archived_document_requirements) AS arch_requirements,
+  (SELECT COUNT(*) FROM archived_cycle_joining_dates)    AS arch_doj_calendar,
   (SELECT COUNT(*) FROM students)                   AS students,
   (SELECT COUNT(*) FROM documents)                  AS documents,
   (SELECT COUNT(*) FROM application_drafts)         AS drafts,

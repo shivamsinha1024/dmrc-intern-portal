@@ -319,3 +319,54 @@ h1, h2, h3, h4, .brand-text {
   border: 1px solid var(--dmrc-emerald) !important;
   border-radius: 4px;
 }
+
+/* ------------------------------------------------------------------
+   THE ARCHIVE'S JOINING CALENDAR
+
+   .ahr-approved-date above is used by every calendar in the portal and
+   means "an administrator approved this date". The archive needs two
+   more, because a closed cycle can show something a live one cannot:
+   what was approved AND what was actually used are no longer the same
+   question.
+
+     .ahr-approved-date          approved AND used -- a normal intake
+     .ahr-approved-unused-date   approved, nobody was allotted it
+     .ahr-offcalendar-date       used but NEVER approved
+
+   The third is the one worth having. HR may allot ANY date when
+   scheduling, including one outside the approved calendar, and once a
+   cycle is closed this is the only place that decision is visible. It
+   is given the AMBER token rather than a variation on the emerald,
+   because it is a flag rather than a shade of "approved" -- and amber
+   already means "attention, not error" everywhere else in this sheet.
+
+   Every date stays selectable in the filter, including unapproved and
+   past ones. These marks say where the records are; they do not limit
+   what may be chosen.
+------------------------------------------------------------------ */
+.ahr-approved-unused-date {
+  background-color: transparent !important;
+  color: var(--text-muted) !important;
+  border: 1px dashed var(--text-muted) !important;
+  border-radius: 4px;
+}
+
+.ahr-offcalendar-date {
+  background-color: var(--dmrc-amber-soft) !important;
+  color: var(--dmrc-amber) !important;
+  font-weight: bold !important;
+  border: 1px solid var(--dmrc-amber) !important;
+  border-radius: 4px;
+}
+
+/* The key beside the archive's date filter. Each swatch carries the same
+   class as the calendar day it describes, so the two cannot drift apart
+   -- restyle a day above and its swatch follows. This rule only gives
+   them a size and shape; the colours come from the rules above. */
+.ahr-legend-swatch {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  vertical-align: -1px;
+  margin-right: 0.25rem;
+}
