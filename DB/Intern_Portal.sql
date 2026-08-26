@@ -76,8 +76,33 @@ CREATE TABLE employees (
     full_name VARCHAR(150) NOT NULL,
     designation VARCHAR(100) NOT NULL,
     department_id INT NOT NULL, 
-    official_email VARCHAR(150) NOT NULL UNIQUE,
+    -- Optional. The DMRC directory may not hold an address for every employee,
+    -- and the employee row must exist before that person can use the portal at
+    -- all -- so a mandatory email here would lock out anyone the directory has
+    -- no address for.
+    --
+    -- Nothing reads it today. Referrer and candidate notifications use the
+    -- addresses collected on the Phase-1 form, per HR. This is only the
+    -- directory's own address, kept for internal notices later and to give
+    -- dashboard accounts a sensible username when one is provisioned.
+    --
+    -- UNIQUE is retained: MySQL permits many NULLs in a unique index, so
+    -- duplicates are still refused while absence is allowed.
+    official_email VARCHAR(150) NULL UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    -- FALSE for an employee who has left DMRC.
+    --
+    -- They are not deleted. applications.referrer_employee_id has no cascade,
+    -- so the database refuses to remove anyone who has ever referred a
+    -- candidate -- correctly, since that would destroy referral history. This
+    -- flag is how the nightly directory sync records a departure instead:
+    -- anyone absent from the latest directory export is marked FALSE.
+    --s
+    -- Identity resolution ignores inactive employees, so a leaver loses access
+    -- to both portals while every record naming them stays intact.
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+
     CONSTRAINT fk_emp_dept FOREIGN KEY (department_id) REFERENCES departments(department_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

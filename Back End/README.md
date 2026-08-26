@@ -7,9 +7,9 @@ This repository contains the DMRC Intern Referral Portal, designed for deploymen
 * **Backend:** Django REST Framework (Python) connected to a MySQL 8.0.16+ database.
 * **Frontend:** HTML/JS powered by Alpine.js and Bootstrap 5.
 
-**Note on Frontend:** The frontend requires no Node.js build step or `package.json`. All reactive state and UI styling are handled via external CDNs natively in the browser.
+**Note on Frontend:** The frontend requires no Node.js build step or `package.json`. All reactive state and UI styling are handled natively in the browser.
 
-> **Requires internet access from the browser.** The pages currently load Alpine.js, Bootstrap and Flatpickr from `cdn.jsdelivr.net`. If the browsers on DMRC workstations cannot reach the public internet, **Alpine.js will not load and neither portal will render at all.** Self-hosting these libraries is planned; see *Known Gaps*.
+**No internet access required.** All frontend libraries are held locally at pinned versions — Alpine.js 3.16.2, Bootstrap 5.3.3, Bootstrap Icons 1.11.3, Flatpickr 4.6.13, and the web fonts. Neither page contacts the public internet, and both have been verified working offline.
 
 **Note on authentication:** This portal authenticates nobody. It has no login screen and stores no passwords. Identity is supplied by DMRC's existing employee login; the portal only decides what an identified employee may do. See `portal/identity/base.py`.
 
@@ -53,25 +53,13 @@ mysql -u <admin_user> -p < "DB/Intern_Portal.sql"
 
 **Do not run anything in `DB/dev_only/`.** Those scripts reset or seed data for local development. One of them inserts fictitious employees.
 
-### 4. Run Django's Migrations — WITH `--fake`
+### 4. Run Django's Migrations
 
 ```bash
-python manage.py migrate portal --fake
 python manage.py migrate
 ```
 
-The portal's three migrations issue raw SQL to upgrade a database built
-*before* those changes existed. `Intern_Portal.sql` already contains their
-result, so running them normally against a fresh database FAILS — migration
-0002 adds columns the master script already has, and 0003 drops columns it
-never created.
-
-The first command records them as applied without executing them. The second
-then creates only Django's own internal tables (sessions, content types,
-auth). Order matters.
-
-On an existing database that predates these changes, run them normally with
-plain `migrate`.
+This creates only Django's own internal tables (sessions, content types, auth). The portal's own models are declared `managed = False`, so Django never creates or alters the tables from step 3.
 
 ### 5. Populate the Employee Directory — REQUIRED
 
@@ -80,17 +68,20 @@ plain `migrate`.
 Each row requires an employee code, full name, designation, department and official email. The employee code must be *exactly* the string DMRC's login system returns for that person.
 
 ```sql
-INSERT INTO employees (employee_code, full_name, designation, department_id, official_email)
+INSERT INTO employees (employee_code, full_name, designation, department_id)
 VALUES (
-  'EMP-1001',
+  '14086',
   'NAME AS IN DIRECTORY',
   'DESIGNATION AS IN DIRECTORY',
-  (SELECT department_id FROM departments WHERE department_name = 'IT'),
-  'person@dmrc.org'
+  (SELECT department_id FROM departments WHERE department_name = 'IT')
 );
 ```
 
+`official_email` is optional and may be omitted. Employee codes at DMRC are numeric, 1 to 5 digits.
+
 The designation is printed beneath the signature on every offer letter that person signs, so it must be kept current.
+
+Departed employees are never deleted — the database refuses to remove anyone who has ever referred a candidate, since that would destroy referral history. Set `is_active = FALSE` instead; identity resolution ignores inactive employees, so access is withdrawn while every record naming them survives.
 
 ### 6. Create the First SYS-ADMIN — REQUIRED
 
@@ -100,7 +91,7 @@ Dashboard accounts are created from the IAM screen, which requires the caller to
 INSERT INTO users (role_id, employee_id, username, email)
 VALUES (
   (SELECT role_id FROM roles WHERE role_name = 'SYS-ADMIN'),
-  (SELECT employee_id FROM employees WHERE employee_code = 'EMP-1001'),
+  (SELECT employee_id FROM employees WHERE employee_code = '14086'),
   'chosen.username',
   'person@dmrc.org'
 );
@@ -168,13 +159,14 @@ Candidate records include **Aadhaar numbers, stored in full and unencrypted**, i
 
 | Gap | Status |
 |---|---|
-| Frontend contains 61 hardcoded `http://127.0.0.1:8000` addresses that will not work on the intranet | To be fixed; depends on the deployment address |
-| Frontend libraries load from public CDNs (see note at top) | To be self-hosted |
+| Frontend contains 61 hardcoded `http://127.0.0.1:8000` addresses that will not work on the intranet | To be fixed; depends on the API server address and the identity arrangement |
 | Django 4.2 reached end of security support in April 2026 | Upgrade to 5.2 LTS planned |
 | Automated email notifications | In development, delivered after integration |
 | No upload size limit on candidate documents (file *types* are validated) | Pending a limit from HR |
 | No automated test suite | Tested manually against the full workflow |
 | No API versioning or rate limiting | Acceptable for a single internal consumer |
+
+**Closed:** frontend libraries are now self-hosted at pinned versions; the database connection is configurable via `DB_SSL` / `DB_SSL_CA`; departed employees can be deactivated via `employees.is_active`.
 
 ---
 

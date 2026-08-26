@@ -520,8 +520,15 @@ class Employees(models.Model):
     full_name = models.CharField(max_length=150)
     designation = models.CharField(max_length=100)
     department = models.ForeignKey(Departments, models.DO_NOTHING)
-    official_email = models.CharField(unique=True, max_length=150)
+    #: Optional -- the DMRC directory may hold no address for an employee, and
+    #: the row must exist before they can use the portal. Nothing reads it;
+    #: notifications use the addresses collected on the Phase-1 form.
+    official_email = models.CharField(unique=True, max_length=150, blank=True, null=True)
     created_at = models.DateTimeField(blank=True, null=True)
+
+    #: FALSE for an employee who has left DMRC. Set by the directory sync, not
+    #: by any user action. Identity resolution skips inactive employees.
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         managed = False

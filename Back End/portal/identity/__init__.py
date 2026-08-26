@@ -59,11 +59,31 @@ def get_identity(request):
     if not code:
         return None
 
+    # Defensive strip. The contract in base.py requires providers to return a
+    # trimmed code, but the lookup below is an exact match -- a trailing space
+    # picked up from an LDAP attribute or a proxy header would match nothing and
+    # refuse the employee with no indication why. Cheap insurance against a bug
+    # that would be expensive to find.
+    code = code.strip()
+    if not code:
+        return None
+
     # Imported here rather than at module scope: this package is imported by
     # settings-dependent code paths before the app registry is ready.
     from ..models import Employees, Users
 
-    employee = Employees.objects.filter(employee_code=code).select_related('department').first()
+    # is_active=False means the employee has left DMRC. They are never deleted
+    # -- referral history depends on the row surviving -- so this flag is what
+    # withdraws their access. A departed employee resolves to no employee at
+    # all and is refused with a 401, exactly as an unknown code is.
+    #
+    # This only affects who may USE the portal. Records naming that employee,
+    # including applications they referred, are reached by foreign key and are
+    # unaffected.
+    employee = (Employees.objects
+                .filter(employee_code=code, is_active=True)
+                .select_related('department')
+                .first())
 
     user = None
     role = None
