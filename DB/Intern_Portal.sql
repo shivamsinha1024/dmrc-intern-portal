@@ -691,11 +691,18 @@ CREATE TABLE application_status_history (
 CREATE TABLE notifications (
     notification_id INT AUTO_INCREMENT PRIMARY KEY,
     application_id INT NULL, 
+    -- Values are APPENDED, never inserted mid-list. MySQL stores an ENUM as a
+    -- number counting from the left, so inserting a value in the middle
+    -- silently re-labels every row already stored.
+    --
+    -- Nine of these are in use, per HR. The rest are catalogue entries kept
+    -- for future use -- an unused ENUM value costs nothing.
     notification_type ENUM(
         'Registration Successful', 'Application Submitted', 'Documents Pending', 
         'Application Approved', 'Application Rejected', 'Joining Schedule', 
         'Completion Approved', 'Reminder', 'Announcement', 
-        'Returned for Correction', 'Offer Letter Issued', 'Completion Certificate Issued'
+        'Returned for Correction', 'Offer Letter Issued', 'Completion Certificate Issued',
+        'No Show', 'Academy Schedule', 'College Referral'
     ) NOT NULL,
     recipient_email VARCHAR(150) NOT NULL,
     subject VARCHAR(150) NOT NULL,
