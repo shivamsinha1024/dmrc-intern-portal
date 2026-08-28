@@ -1,0 +1,15 @@
+{% autoescape off %}{{ referrer_greeting }}
+
+Application No. – {{ application_code }}
+
+Your referred internship application requires additional information/documents before it can be processed further.
+
+Required Change(s):
+{{ correction_remarks }}
+
+Please make the necessary changes through the Internship Portal so that it can be processed. Failure to provide the changes may result in closure of your application. You may also choose to withdraw the current application.
+
+Regards,
+HR Department
+Delhi Metro Rail Corporation Limited
+{% endautoescape %}

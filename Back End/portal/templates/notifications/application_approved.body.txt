@@ -1,0 +1,12 @@
+{% autoescape off %}{{ referrer_greeting }}
+
+Application No. – {{ application_code }}
+
+This is to inform you that your referred internship application in respect of {{ candidate_display_name }} has been approved and you may please ask the candidate to check their email for further instructions regarding reporting, documentation, and onboarding.
+
+We look forward to welcoming your referred candidate in DMRC.
+
+Regards,
+HR Department
+Delhi Metro Rail Corporation Limited
+{% endautoescape %}

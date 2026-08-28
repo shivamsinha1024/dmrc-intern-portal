@@ -1,0 +1,14 @@
+{% autoescape off %}{{ referrer_greeting }}
+
+This is to inform you that the candidate {{ candidate_display_name }} (Application No.: {{ application_code }}), who was required to report for internship on {{ joining_date }}, has not reported.
+
+Kindly note that the candidate has not completed the reporting formalities as per the prescribed timeline and is yet to intern with DMRC.
+
+You may choose another date of joining for the candidate from the referrer portal. Please note, you are allowed to re-chose the date of joining only once.
+
+For any clarification, please contact the HR Department.
+
+Regards,
+HR Department
+Delhi Metro Rail Corporation Limited (DMRC)
+{% endautoescape %}

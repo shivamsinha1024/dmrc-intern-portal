@@ -582,6 +582,11 @@ class Notifications(models.Model):
     delivery_status = models.CharField(max_length=7, blank=True, null=True)
     queued_at = models.DateTimeField(blank=True, null=True)
     processed_at = models.DateTimeField(blank=True, null=True)
+    #: Why a send failed -- a NULL referrer address, a relay refusal, a
+    #: rejected recipient, a missing attachment. NULL on every row that has
+    #: not failed. This is the record of record: logs/portal.log rotates at
+    #: 5 MB and keeps five copies, so failures age out of it. Rows do not.
+    failure_reason = models.CharField(max_length=500, blank=True, null=True)
 
     class Meta:
         managed = False

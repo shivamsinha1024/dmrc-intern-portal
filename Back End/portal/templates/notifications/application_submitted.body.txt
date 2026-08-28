@@ -1,0 +1,16 @@
+{% autoescape off %}{{ referrer_greeting }}
+
+Thank you for submitting the internship application of {{ candidate_display_name }} through the DMRC Internship Portal.
+
+We have successfully received the application and supporting documents and is under review. You will be notified on the status of the application through email and the internship portal.
+
+For reference the Application No. is {{ application_code }} and it may be mentioned in all further correspondence, if required.
+
+Please do not submit multiple application for this candidate, for the same internship cycle. The live and updated status of the application can be viewed on the Internship Portal.
+
+Thank you for your interest in interning with Delhi Metro Rail Corporation Limited (DMRC).
+
+Regards,
+HR Department
+Delhi Metro Rail Corporation Limited
+{% endautoescape %}

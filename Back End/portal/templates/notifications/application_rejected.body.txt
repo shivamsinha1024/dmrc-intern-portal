@@ -1,0 +1,14 @@
+{% autoescape off %}{{ referrer_greeting }}
+
+Application No. – {{ application_code }}
+
+With reference to the internship application submitted by you for {{ candidate_display_name }} in DMRC, it is to inform that your referred application has not been selected for the current internship cycle and the same is rejected.
+
+For any queries or clarification, please reach out to the HR Department.
+
+Thank You
+
+Regards,
+HR Department
+Delhi Metro Rail Corporation Limited
+{% endautoescape %}

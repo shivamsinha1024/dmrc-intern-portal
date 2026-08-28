@@ -1,0 +1,16 @@
+{% autoescape off %}Dear {{ candidate_display_name }},
+
+Congratulations on successfully completing your internship at Delhi Metro Rail Corporation Limited.
+
+We appreciate your contribution and hope your internship has been a valuable learning experience.
+
+Your digitally signed internship completion letter is enclosed.
+
+Thank you for interning with Delhi Metro Rail Corporation Limited.
+
+We wish you all the best in your future academic and professional journey.
+
+Regards,
+HR Department
+Delhi Metro Rail Corporation Limited
+{% endautoescape %}

@@ -1,0 +1,27 @@
+{% autoescape off %}Dear {{ candidate_display_name }},
+
+Congratulations once again on your selection for the Internship Programme at Delhi Metro Rail Corporation Limited (DMRC).
+
+As a part of the internship programme, you are required to attend a mandatory one-day Induction Training at the DMRC Academy. This training is designed to familiarize interns with DMRC's organizational policies, safety practices, workplace conduct, and operational procedures.
+
+The training details are as follows:
+
+Training Date: {{ academy_date }}
+Reporting Time: 9:00AM
+Training Venue: DMRC Academy, Train Depot, East Approach Road, Shastri Park, Delhi – 110053
+
+Important Instructions:
+
+• Attendance at this training programme is mandatory for all interns.
+• Kindly report at the venue 15 - 30 minutes before the scheduled reporting time.
+• Please carry a valid Government-issued Photo ID and internship offer letter issued by the HR Department for verification.
+• Follow the instructions provided by the training officials during the programme.
+
+Please note: Attendance in the mandatory induction training is a prerequisite for successful completion of the internship. Interns who fail to attend the training will not be eligible for the Internship Completion Certificate. Please do ensure to get the Annexure B, shared with you, duly signed by the trainer/lecturer at DMRC Academy.
+
+We look forward to your active participation and wish you a valuable learning experience at DMRC.
+
+Warm Regards,
+HR Department
+Delhi Metro Rail Corporation Limited (DMRC)
+{% endautoescape %}

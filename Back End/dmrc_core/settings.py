@@ -447,6 +447,51 @@ LOGGING = {
 }
 
 # ==============================================================================
+# EMAIL
+#
+# EMAIL_MODE picks the backend. 'console' prints each message to the terminal
+# and sends nothing; 'smtp' hands it to a real relay. Development defaults to
+# console, a deployed server to smtp, so the whole notification flow can be
+# built and tested with no mail server in existence.
+#
+# Nothing about DMRC's relay is hardcoded here. Switching to it is a .env
+# change:
+#     EMAIL_MODE=smtp
+#     EMAIL_HOST=<relay hostname>
+#     EMAIL_PORT=25
+#     DEFAULT_FROM_EMAIL=<the address the relay permits>
+# ==============================================================================
+
+EMAIL_MODE = os.environ.get('EMAIL_MODE', 'console' if DEBUG else 'smtp').strip().lower()
+
+if EMAIL_MODE == 'console':
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '').strip()
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT') or 25)
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = env_flag('EMAIL_USE_TLS', default=False)
+EMAIL_USE_SSL = env_flag('EMAIL_USE_SSL', default=False)
+
+# Seconds to wait for the relay. Without this the default is no timeout, and an
+# internal-only relay unreachable from where this runs would hang the send
+# command indefinitely rather than recording a Failed row.
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT') or 20)
+
+# The From address. Left as a placeholder in development because the console
+# backend does not care; the production check below refuses to start without a
+# real one, since a relay that permits only certain From addresses will
+# otherwise reject every message at send time.
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', '').strip() or 'portal@localhost.invalid'
+
+# How many Pending rows one run of `manage.py send_notifications` will attempt.
+# Bounded so a cron run cannot occupy the relay indefinitely.
+NOTIFICATION_SEND_BATCH_SIZE = int(os.environ.get('NOTIFICATION_SEND_BATCH_SIZE') or 50)
+
+# ==============================================================================
 # PRODUCTION SAFETY CHECKS
 #
 # Both of the mistakes below would be invisible until somebody exploited them,
@@ -477,6 +522,35 @@ if not DEBUG:
             "Implement portal/identity/intranet.py and set in .env:\n"
             "  IDENTITY_PROVIDER=portal.identity.intranet.IntranetIdentityProvider\n\n"
             "See portal/identity/base.py for the contract -- it is one method."
+        )
+
+    if EMAIL_MODE != 'smtp':
+        raise ImproperlyConfigured(
+            "EMAIL_MODE is not 'smtp', so notifications would be printed to the "
+            "console and never sent, while the portal recorded them as Sent.\n\n"
+            "Set in .env:\n"
+            "  EMAIL_MODE=smtp"
+        )
+
+    if not EMAIL_HOST:
+        raise ImproperlyConfigured(
+            "EMAIL_HOST is not set. Set the relay hostname in .env, e.g.\n"
+            "  EMAIL_HOST=smtp.dmrc.org"
+        )
+
+    if DEFAULT_FROM_EMAIL == 'portal@localhost.invalid':
+        raise ImproperlyConfigured(
+            "DEFAULT_FROM_EMAIL is still the development placeholder. Set it in "
+            ".env to the address DMRC's relay permits this application to send "
+            "as. A relay that restricts From addresses will reject every "
+            "message otherwise."
+        )
+
+    if EMAIL_USE_TLS and EMAIL_USE_SSL:
+        raise ImproperlyConfigured(
+            "EMAIL_USE_TLS and EMAIL_USE_SSL are both on. They are mutually "
+            "exclusive -- TLS is STARTTLS on port 587, SSL is implicit TLS on "
+            "port 465. Turn one off in .env."
         )
 
     # Standard hardening once the portal is behind HTTPS. Set SECURE_COOKIES=False

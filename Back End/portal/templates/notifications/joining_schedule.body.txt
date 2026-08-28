@@ -1,0 +1,32 @@
+{% autoescape off %}Dear {{ candidate_display_name }},
+
+Congratulations!
+
+We are pleased to inform you that you have been selected for the Internship Programme at Delhi Metro Rail Corporation Limited (DMRC).
+
+You are requested to report for the joining formalities as per the details below:
+
+Reporting Date: {{ joining_date }}
+Reporting Time: 10:00AM
+Reporting Venue: DMRC Metro Bhawan
+Reporting Address:
+6th Floor, C-Wing,
+Metro Bhawan, DMRC,
+Barakhamba Road,
+Fire Brigade Lane
+Delhi-110001
+
+Please ensure that you report on time and carry a valid id proof for verification.
+
+In case you are unable to report on the said date of joining, please inform the next preferred date in advance so that you may be rescheduled.
+
+In case of failure to report on stipulated date without any intimation, you'll be marked as 'Absent' and no further opportunity for internship may be extended to you.
+
+For any queries or assistance, please contact the HR Department at internship@dmrc.org
+
+We congratulate you once again and look forward to welcoming you to Delhi Metro Rail Corporation Limited (DMRC). We wish you a meaningful and enriching internship experience.
+
+Warm Regards,
+HR Department
+Delhi Metro Rail Corporation Limited (DMRC)
+{% endautoescape %}

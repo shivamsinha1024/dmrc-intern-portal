@@ -17,6 +17,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction, IntegrityError
+from portal.notifications import types as ntypes
+from portal.notifications.queue import queue_notification
 # Q for the archive's search and either-date filters; F for ordering that keeps
 # blank dates at the bottom whichever way a column is sorted.
 from django.db.models import Q, F
@@ -2862,6 +2864,11 @@ class SubmitApplicationView(APIView):
                     for leftover in leftovers:
                         purge_draft(leftover)
 
+                # No notification on a resubmission. Confirmed with HR: the
+                # referrer has just performed the action and can see the status
+                # on their portal, and Application Submitted's approved wording
+                # is written for a first filing -- it quotes the Application No.
+                # they already have and warns against submitting more than once.
                 return Response({"message": "Application corrections submitted successfully.", "ticket_id": ticket_id}, status=status.HTTP_200_OK)
 
             else:
@@ -2989,6 +2996,26 @@ class SubmitApplicationView(APIView):
                         # The draft has become a real application; remove it and
                         # its working files so nothing is left behind on disk.
                         purge_draft(draft)
+
+                 # --- THE EMAIL ------------------------------------------
+                #
+                # LAST, and this position is not cosmetic. HR's wording quotes
+                # the Application No., but application_code does not exist when
+                # the row is created -- next_application_code() assigns it
+                # afterwards. Queue any earlier and the template's required
+                # data is missing, and the notification is recorded Failed for
+                # a submission that was perfectly fine.
+                #
+                # Skipped entirely for an institutional merge. That record has
+                # no referring employee, and Application Submitted is addressed
+                # to one. Guarded here rather than left to resolve_recipient()
+                # because an institutional intake is a routine, expected event
+                # -- letting it record Failed every time would fill the table
+                # with rows describing nothing wrong. Contrast
+                # HRApplicationActionAPIView, where a referrer-facing type on an
+                # institutional record IS an anomaly and should be recorded.
+                if not is_institutional(application):
+                    queue_notification(application, ntypes.APPLICATION_SUBMITTED)
 
                 return Response({"message": "Application and document vault successfully submitted and locked.", "ticket_id": ticket_id}, status=status.HTTP_201_CREATED)
 
@@ -4537,6 +4564,28 @@ class HRArchiveRecordAPIView(APIView):
                         status=status.HTTP_200_OK)
 
 
+def date_value_changed(incoming, previous):
+    """True if `incoming` names a different date from the one already stored.
+
+    Guards against re-sending an email for a date that has not moved. HR may
+    PATCH the same record several times -- correcting a sub-department, marking
+    an arrival -- and the browser resends the whole form each time, so the
+    joining date arrives again unchanged on every one of those requests.
+
+    The queue's duplicate guard does not cover this. It suppresses a second
+    PENDING row, which stops a double-click, but once the first email has been
+    sent that row is Sent and no longer blocks anything. Without this check the
+    candidate would be re-told their reporting date on every subsequent edit.
+
+    The two sides arrive in different shapes: `incoming` is the string the
+    browser posted ('2026-03-15'), `previous` is a datetime.date read from the
+    database. Both are reduced to an ISO string rather than parsed, which needs
+    no import and behaves the same if a real date object is ever passed in.
+    """
+    if not incoming:
+        return False
+    return str(incoming) != (previous.isoformat() if previous else '')
+
 class HRApplicationActionAPIView(APIView):
     @role_required(*ALL_HR_ROLES)
     @transaction.atomic
@@ -4672,6 +4721,42 @@ class HRApplicationActionAPIView(APIView):
                     app.form_correction_remarks = remark
             # --------------------------------------------------------------
 
+            # --- WHICH NOTIFICATION THIS ACTION OWES ----------------------
+            #
+            # Decided here, not at the bottom, because three different outcomes
+            # all leave status='Rejected' and only the branch that produced it
+            # knows which one this was. Nothing is sent from this method: a
+            # queued row is a Pending record, and `manage.py send_notifications`
+            # sends it later.
+            #
+            # A NO-SHOW is announced only when the referrer can actually act on
+            # it. HR's approved wording tells them to pick a new joining date
+            # from the referrer portal -- true for an ordinary no-show, false
+            # for an admin escalation (held for a SYS-ADMIN) and false for an
+            # exhausted lifeline (their one reschedule is spent). Both of those
+            # leave awaiting_referrer_action False, which is exactly the test.
+            # Sending it anyway would send someone to a portal with nothing on
+            # it. Confirmed with HR.
+            #
+            # The no-show branch deliberately does NOT fall through to
+            # Application Rejected. Those cases carry status='Rejected' and
+            # would otherwise pick it up, telling a referrer their candidate was
+            # rejected when what happened was a missed joining date.
+            notification_type = None
+            if bounce_category == 'Invalid Document':
+                notification_type = ntypes.RETURNED_FOR_CORRECTION
+            elif bounce_category == 'No Show':
+                if app.awaiting_referrer_action:
+                    notification_type = ntypes.NO_SHOW
+            elif app.status == 'Rejected' and old_status != 'Rejected':
+                notification_type = ntypes.APPLICATION_REJECTED
+            elif app.status == 'Approved' and old_status != 'Approved':
+                notification_type = ntypes.APPLICATION_APPROVED
+
+            # Filled in by the arrival/scheduling block below. Initialised here
+            # because that block is conditional and may not run at all.
+            joining_notifications = []
+
             if is_admin_escalated is not None:
                 # Field confirmed present on Applications; no hasattr guard so a
                 # future rename fails loudly instead of silently dropping the flag.
@@ -4711,6 +4796,12 @@ class HRApplicationActionAPIView(APIView):
 
             if is_arrival or allotted_doj or sub_department or dmra_session_date or custom_override_file:
                 joining, created = JoiningDetails.objects.get_or_create(application=app)
+
+                # Read BEFORE anything below overwrites them. These decide
+                # whether the candidate is told about a date they have not been
+                # told about yet.
+                previous_allotted_doj = joining.allotted_date_of_joining
+                previous_dmra_session_date = joining.dmra_session_date
 
                 if is_arrival:
                     joining.actual_date_of_joining = actual_doj or timezone.localdate()
@@ -4755,6 +4846,15 @@ class HRApplicationActionAPIView(APIView):
 
                 joining.save()
 
+                # A joining date confirms the candidate's reporting details; a
+                # DMRA session date summons them to the Academy. Both go to the
+                # candidate, and both are announced only when the date is new or
+                # has moved -- see date_value_changed().
+                if date_value_changed(allotted_doj, previous_allotted_doj):
+                    joining_notifications.append(ntypes.JOINING_SCHEDULE)
+                if date_value_changed(dmra_session_date, previous_dmra_session_date):
+                    joining_notifications.append(ntypes.ACADEMY_SCHEDULE)
+
             system_user = getattr(getattr(request, 'identity', None), 'user', None)
 
             # --- PER-APPLICATION TIMELINE ---
@@ -4794,6 +4894,26 @@ class HRApplicationActionAPIView(APIView):
             except Exception as audit_error:
                 logger.error("AUDIT WRITE FAILED (%s): %s",
                              type(audit_error).__name__, audit_error)
+
+            # --- NOTIFICATIONS --------------------------------------------
+            #
+            # Last, deliberately. Everything above has been written, so each
+            # email is composed from the record as it now stands rather than
+            # from half-applied state -- the joining date in a Joining Schedule
+            # email is the one that was just saved.
+            #
+            # INSIDE the transaction, also deliberately. This method is
+            # @transaction.atomic, so if anything later rolls the request back
+            # the queued rows go with it and no email is sent for an action that
+            # did not happen.
+            #
+            # queue_notification() writes a row and never raises: a missing
+            # referrer address or an absent joining date is recorded as a Failed
+            # row with a reason, not thrown. A notification problem cannot turn
+            # a completed HR action into a 500.
+            for queued_type in [notification_type, *joining_notifications]:
+                if queued_type:
+                    queue_notification(app, queued_type)
 
             return Response({"message": f"Ticket {ticket} synchronized successfully."}, status=status.HTTP_200_OK)
 
@@ -5228,6 +5348,11 @@ class CollegeReferralAPIView(APIView):
             )
 
         joining, _ = JoiningDetails.objects.get_or_create(application=application)
+
+        # Read BEFORE the assignment below. Decides whether the candidate is
+        # being told a reporting date they have not been told before.
+        previous_allotted_doj = joining.allotted_date_of_joining
+
         joining.allotted_date_of_joining = allotted_doj
         joining.allotted_sub_department = sub_dept_row
         joining.save()
@@ -5242,6 +5367,29 @@ class CollegeReferralAPIView(APIView):
             remark=remark or f'Reporting date {allotted_doj} allotted to {sub_dept_row.sub_department_name}.',
             audit_action='Pending Arrival',
         )
+
+        # --- THE EMAIL ------------------------------------------------------
+        #
+        # The joining instructions, with the Student Information Format and the
+        # documents checklist attached from portal/static_attachments/. It goes
+        # to the CANDIDATE -- a college referral has no employee referrer, and
+        # this is the message that tells them where and when to turn up.
+        #
+        # Only when the date is new or has moved. The whole PATCH endpoint stays
+        # reachable while a record sits in the College Referrals section, so
+        # this action can be repeated -- correcting a sub-department, say --
+        # with the same joining date resent each time. The queue's own duplicate
+        # guard does not cover that: it suppresses a second PENDING row, but
+        # once the first email is Sent it no longer blocks anything, and the
+        # candidate would be re-told their reporting date on every later edit.
+        #
+        # A date that genuinely MOVES does re-notify, and must: a candidate told
+        # the wrong date has to be told the new one.
+        #
+        # Inside the transaction: this method runs under the @transaction.atomic
+        # on patch(), so a rollback takes the queued row with it.
+        if date_value_changed(allotted_doj, previous_allotted_doj):
+            queue_notification(application, ntypes.COLLEGE_REFERRAL)
 
         return Response({"message": f"{application.application_code} scheduled."},
                         status=status.HTTP_200_OK)
@@ -5327,6 +5475,19 @@ class CollegeReferralAPIView(APIView):
                     f'to {new_doj}.' + (f' {remark}' if remark else '')),
             audit_action='No Show',
         )
+
+        # --- THE EMAIL ------------------------------------------------------
+        #
+        # A no-show candidate is being given their one second chance, so they
+        # have to be told the new date. Same email as the original scheduling,
+        # carrying the new reporting date and the same two attachments.
+        #
+        # date_value_changed() rather than an unconditional call: the endpoint
+        # requires allottedDoj, but it does not require it to be DIFFERENT, and
+        # resending an identical date would tell the candidate their joining
+        # date had moved when it had not.
+        if date_value_changed(new_doj, previous_doj):
+            queue_notification(application, ntypes.COLLEGE_REFERRAL)
 
         return Response({
             "message": f"New joining date {new_doj} allotted.",
@@ -6521,6 +6682,25 @@ class DMRASessionAPIView(APIView):
             remark=f"DMRA Academy session scheduled for {session_date.strftime('%d-%m-%Y')}.",
             audit_action='DMRA_SESSION_SCHEDULED',
         )
+        
+        # --- THE EMAIL ------------------------------------------------------
+        #
+        # The candidate is summoned to the Academy on this date, so the email
+        # is queued the moment the date is set -- exactly as this class's
+        # docstring has always said it would be.
+        #
+        # No duplicate guard needed here beyond the queue's own: the 409 above
+        # refuses a second POST once dmra_session_date is present, so this line
+        # can be reached only once per application through this endpoint. A
+        # SYS-ADMIN correcting a locked date goes through Admin Mode instead,
+        # which is HRApplicationActionAPIView -- and that path re-notifies only
+        # when the date genuinely moves. A candidate told the wrong date must be
+        # told the new one.
+        #
+        # Inside the transaction: this method is @transaction.atomic, so a
+        # rollback takes the queued row with it and nobody is summoned to a
+        # session that was not scheduled.
+        queue_notification(application, ntypes.ACADEMY_SCHEDULE)
 
         return Response({
             "message": f"DMRA session set to {session_date.strftime('%d-%m-%Y')}. "
@@ -7108,11 +7288,23 @@ class CertificateDispatchAPIView(APIView):
 
     POST {ticket}
 
-    THE EMAIL ENGINE DOES NOT EXIST YET. Rather than block the pipeline or
-    pretend a message was sent, this records the certificate as dispatched with
-    its email PENDING. The intern is marked Completed and the record says plainly
-    that a message is owed. When the engine is built it has an exact list of
-    what it still has to send.
+    Dispatch marks the intern Completed, records the dispatch time, and QUEUES
+    the completion email. Nothing is sent from this request: the row is written
+    Pending and `manage.py send_notifications` sends it, with the signed
+    certificate PDF attached, resolved at send time.
+
+    TWO RECORDS OF THE SAME FACT, and they must not drift:
+
+      notifications                      the queue row, and the failure reason
+                                         if it never went out
+      applications.certificate_email_status
+                                         what HR's dashboard and the archive
+                                         filter actually read
+
+    The send command syncs the column when it processes the row. A row recorded
+    Failed at QUEUE time never reaches the send command, so this method syncs
+    that case itself -- otherwise the column would sit on 'Pending' forever,
+    telling HR a message was owed that nothing would ever send.
     """
 
     @role_required('HR-APP')
@@ -7157,9 +7349,36 @@ class CertificateDispatchAPIView(APIView):
             application, actor,
             previous_status=previous_status, new_status='Completed',
             remark=f"Completion certificate dispatched to {candidate_email or 'the candidate'}. "
-                   f"Email queued and not yet sent.",
+                   f"Completion email queued for sending.",
             audit_action='CERTIFICATE_DISPATCHED',
         )
+
+        # --- THE EMAIL ------------------------------------------------------
+        #
+        # Queued, not sent. The signed PDF is attached by the send command,
+        # located through certificate_type() + current_document() at that
+        # moment -- never a path captured here. A correction uploaded between
+        # now and then supersedes the certificate and quarantines the old file,
+        # so a path stored now could point at a document that has moved.
+        #
+        # Inside the transaction: this method is @transaction.atomic, so if
+        # anything rolls the dispatch back the queued row goes with it and no
+        # certificate is emailed for a dispatch that did not happen.
+        notification = queue_notification(
+            application, ntypes.COMPLETION_CERTIFICATE_ISSUED)
+
+        # A notification recorded Failed at queue time -- no candidate address,
+        # say -- is never picked up by the send command, so nothing else will
+        # ever move certificate_email_status off 'Pending'. Without this, the
+        # dashboard would show a message permanently owed and permanently
+        # un-sent, with no indication anything was wrong.
+        if notification is not None and notification.delivery_status == ntypes.STATUS_FAILED:
+            application.certificate_email_status = ntypes.STATUS_FAILED
+            application.save(update_fields=['certificate_email_status'])
+            logger.error(
+                'Certificate email for %s could not be queued: %s',
+                ticket, notification.failure_reason,
+            )
 
         return Response({
             "message": f"{ticket} marked as completed. The certificate is "
