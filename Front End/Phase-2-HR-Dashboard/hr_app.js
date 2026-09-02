@@ -146,12 +146,25 @@ document.addEventListener('alpine:init', () => {
         configCycleName: '',    // What the server reported it wrote/read
         pendingConfirm: null,   // Change summary awaiting the administrator's OK
         
-        // God Mode State
+        // --- ADMIN MODE STATE ---
+        //
+        // adminOrigDept and adminOrigWard are GONE. They existed so the
+        // browser could adjust the capacity matrix by hand after a god-mode
+        // save. The server owns that count now, so the dashboard re-reads it
+        // instead of recomputing -- and a snapshot of two fields could never
+        // have produced the per-field diff the audit ledger now records.
         adminEditMode: false,
         adminModeStatus: '',
         adminModeRemark: '',
-        adminOrigDept: '',
-        adminOrigWard: false,
+
+        // Every editable value as it stood when Admin Mode was switched on.
+        // The diff is taken against this, so only fields the administrator
+        // actually touched are sent. An untouched field is never "corrected"
+        // to the value it already had, and never reaches the ledger.
+        adminSnapshot: null,
+        adminPendingChanges: [],   // readable lines for the dialog
+        adminWarnings: null,       // what a reset cannot undo, from the GET
+        adminBusy: false,
 
         // --- FORENSIC & EXPORT STATE ---
         // The Archive Vault's own state now lives together further down, under
@@ -688,9 +701,12 @@ document.addEventListener('alpine:init', () => {
                 await this.fetchAdminCycles();
             });
             this.$watch('adminEditMode', (val) => {
-                if(val && this.selectedApplicant) {
-                    this.adminOrigDept = this.selectedApplicant.department;
-                    this.adminOrigWard = this.selectedApplicant.ward;
+                if (val && this.selectedApplicant) {
+                    this.adminSnapshot = this.captureAdminSnapshot();
+                } else {
+                    this.adminSnapshot = null;
+                    this.adminPendingChanges = [];
+                    this.adminWarnings = null;
                 }
             });
 
@@ -2774,46 +2790,245 @@ document.addEventListener('alpine:init', () => {
             } catch (error) { alert(`Error: ${error.message}`); }
         },
         
-        // --- GOD MODE OVERRIDE ---
-        triggerGodModeExecution() {
-            if(!this.adminModeRemark.trim()) return;
-            new bootstrap.Modal(document.getElementById('godModeWarningModal')).show();
+        // --- ADMIN MODE OVERRIDE ------------------------------------------
+        //
+        // Replaces God Mode, which posted a whole-record overwrite through
+        // HRApplicationActionAPIView with isGodMode: true. The differences
+        // that matter:
+        //
+        //   - the SERVER decides which fields may be edited, from an
+        //     allowlist, rather than this file deciding by what it happens
+        //     to send
+        //   - each corrected field gets its own audit row carrying the old
+        //     value, the new value and the reason
+        //   - a reset to Submitted is a real rollback: it clears the
+        //     pipeline columns and withdraws the generated documents
+        //   - issued documents a correction has outdated are flagged, and
+        //     queued emails are rewritten to match
+        //   - the capacity matrix is re-read from the server rather than
+        //     adjusted here by arithmetic free to drift from it
+
+        // Which drawer field maps to which server field. The values on the
+        // right are the server's allowlist keys. Anything not listed here
+        // cannot be sent, and anything the server does not recognise is
+        // refused even if it were.
+        ADMIN_FIELD_MAP: {
+            'name':                     'students.full_name',
+            'bio.father':               'students.fathers_name',
+            'bio.gender':               'students.gender',
+            'bio.dob':                  'students.date_of_birth',
+            'bio.mobile':               'students.mobile_number',
+            'bio.email':                'students.personal_email',
+            'bio.aadhaar_number':       'students.aadhaar_number',
+            'bio.address':              'students.permanent_address',
+            'bio.emergencyName':        'students.emergency_contact_name',
+            'bio.emergencyMobile':      'students.emergency_contact_mobile',
+            'academic.university':      'academic_details.university_name',
+            'academic.college':         'academic_details.college_name',
+            'academic.course':          'academic_details.degree_program',
+            'academic.branch':          'academic_details.branch_name',
+            'academic.semester':        'academic_details.current_semester',
+            'academic.grading':         'academic_details.grading_system',
+            'academic.score':           'academic_details.current_score',
+            'department':               'applications.department',
+            'internship.duration':      'applications.duration_weeks',
+            'ward':                     'applications.is_ward'
         },
 
-        async confirmGodMode() {
-            if (this.adminOrigDept !== this.selectedApplicant.department) {
-                let oldC = this.adminCapacities.find(c => c.dept === this.adminOrigDept);
-                let newC = this.adminCapacities.find(c => c.dept === this.selectedApplicant.department);
-                if (oldC && !this.adminOrigWard) oldC.occupied--;
-                if (newC && !this.selectedApplicant.ward) newC.occupied++;
-            } else if (this.adminOrigWard !== this.selectedApplicant.ward) {
-                let c = this.adminCapacities.find(c => c.dept === this.selectedApplicant.department);
-                if (c) {
-                    if (this.selectedApplicant.ward) c.occupied--; 
-                    else c.occupied++; 
+        // Readable names for the confirmation dialog.
+        ADMIN_FIELD_LABELS: {
+            'name': 'Full name', 'bio.father': "Father's name",
+            'bio.gender': 'Gender', 'bio.dob': 'Date of birth',
+            'bio.mobile': 'Mobile', 'bio.email': 'Email',
+            'bio.aadhaar_number': 'Aadhaar', 'bio.address': 'Address',
+            'bio.emergencyName': 'Emergency contact',
+            'bio.emergencyMobile': 'Emergency mobile',
+            'academic.university': 'University', 'academic.college': 'College',
+            'academic.course': 'Degree', 'academic.branch': 'Branch',
+            'academic.semester': 'Semester',
+            'academic.grading': 'Grading system', 'academic.score': 'Score',
+            'department': 'Department', 'internship.duration': 'Duration',
+            'ward': 'Ward application'
+        },
+
+        // Read a dotted path off selectedApplicant.
+        adminReadPath(path) {
+            return path.split('.').reduce(
+                (obj, key) => (obj == null ? undefined : obj[key]),
+                this.selectedApplicant);
+        },
+
+        captureAdminSnapshot() {
+            const snap = {};
+            Object.keys(this.ADMIN_FIELD_MAP).forEach(path => {
+                snap[path] = this.adminReadPath(path);
+            });
+            return snap;
+        },
+
+        // The drawer shows dates as DD-MM-YYYY; the server wants YYYY-MM-DD.
+        // Converting here rather than changing the display keeps the screen
+        // reading the way DMRC staff expect.
+        adminToIsoDate(value) {
+            if (!value) return value;
+            const text = String(value).trim();
+            const parts = text.split(/[-\/]/);
+            if (parts.length === 3 && parts[0].length <= 2) {
+                const d = parts[0], m = parts[1], y = parts[2];
+                return y + '-' + m.padStart(2, '0') + '-' + d.padStart(2, '0');
+            }
+            return text;   // already ISO, or something the server will reject
+        },
+
+        // Duration renders as either "4" or "4 Weeks" depending on the
+        // select's options. Send the number either way.
+        adminToWeeks(value) {
+            const digits = String(value == null ? '' : value).match(/\d+/);
+            return digits ? Number(digits[0]) : value;
+        },
+
+        // Build {serverKey: value} for the fields that actually changed, plus
+        // a matching list of readable lines for the dialog.
+        buildAdminChanges() {
+            const changes = {};
+            const lines = [];
+            if (!this.adminSnapshot) return { changes: changes, lines: lines };
+
+            Object.keys(this.ADMIN_FIELD_MAP).forEach(path => {
+                const before = this.adminSnapshot[path];
+                const after = this.adminReadPath(path);
+
+                // Loose comparison on purpose: a select can turn 4 into "4"
+                // without the administrator having touched anything.
+                if (String(before == null ? '' : before) ===
+                    String(after == null ? '' : after)) return;
+
+                let value = after;
+                if (path === 'bio.dob') value = this.adminToIsoDate(after);
+                if (path === 'internship.duration') value = this.adminToWeeks(after);
+                if (path === 'ward') value = !!after;
+
+                changes[this.ADMIN_FIELD_MAP[path]] = value;
+
+                const label = this.ADMIN_FIELD_LABELS[path] || path;
+                const show = v => (v === '' || v == null) ? '(blank)' : String(v);
+                lines.push(label + ': ' + show(before) + ' \u2192 ' + show(after));
+            });
+
+            return { changes: changes, lines: lines };
+        },
+
+        // Opens the confirmation dialog. NOTHING is written until the
+        // administrator confirms there.
+        async triggerAdminModeExecution() {
+            if (!this.adminModeRemark.trim()) return;
+
+            const built = this.buildAdminChanges();
+            if (!built.lines.length && !this.adminModeStatus) {
+                alert('Nothing has been changed. Edit a field or choose a status reset first.');
+                return;
+            }
+
+            this.adminPendingChanges = built.lines;
+            this.adminWarnings = null;
+
+            // Only a reset can destroy anything, so only a reset needs the
+            // warnings. A plain field correction skips the round trip.
+            if (this.adminModeStatus) {
+                try {
+                    const response = await fetch(
+                        API_BASE + '/api/admin/mode/?ticket=' +
+                            encodeURIComponent(this.selectedApplicant.ticket),
+                        { headers: this.authHeaders() });
+                    const data = await response.json().catch(() => ({}));
+                    if (response.ok) this.adminWarnings = data.warnings || null;
+                } catch (error) {
+                    // Not fatal. The dialog still lists the changes, it just
+                    // cannot show the counts -- better than blocking a
+                    // correction on a failed read.
+                    console.warn('Could not load rollback warnings:', error);
                 }
             }
-            
-            if(this.adminModeStatus) this.selectedApplicant.status = this.adminModeStatus;
-            
-            // FIRE TO TI-DB CLOUD WITH GOD MODE FLAG
-            await this.syncActionToCloud({
-                ticket: this.selectedApplicant.ticket,
-                status: this.selectedApplicant.status,
-                remark: this.adminModeRemark,
-                department: this.selectedApplicant.department,
-                ward: this.selectedApplicant.ward,
-                dob: this.selectedApplicant.bio.dob,
-                isGodMode: true
-            });
-            
-            bootstrap.Modal.getInstance(document.getElementById('godModeWarningModal')).hide();
-            let offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('applicantDrawer'));
-            if(offcanvas) offcanvas.hide();
 
-            this.adminModeStatus = '';
-            this.adminModeRemark = '';
-            this.adminEditMode = false;
+            new bootstrap.Modal(document.getElementById('adminModeConfirmModal')).show();
+        },
+
+        async confirmAdminMode() {
+            if (this.adminBusy) return;
+            this.adminBusy = true;
+
+            const built = this.buildAdminChanges();
+            const payload = {
+                ticket: this.selectedApplicant.ticket,
+                reason: this.adminModeRemark.trim(),
+                changes: built.changes
+            };
+            if (this.adminModeStatus) payload.status = this.adminModeStatus;
+
+            try {
+                const response = await fetch(API_BASE + '/api/admin/mode/', {
+                    method: 'PATCH',
+                    headers: this.authHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json().catch(() => ({}));
+
+                if (!response.ok) {
+                    // The server returns a per-field error map, so the
+                    // administrator sees everything wrong with the patch at
+                    // once rather than one problem per attempt.
+                    if (data.errors) {
+                        const detail = Object.keys(data.errors)
+                            .map(k => '\u2022 ' + k + ': ' + data.errors[k]).join('\n');
+                        throw new Error('Some changes were refused:\n\n' + detail);
+                    }
+                    throw new Error(data.detail || data.error || 'The override was refused.');
+                }
+
+                const modal = bootstrap.Modal.getInstance(
+                    document.getElementById('adminModeConfirmModal'));
+                if (modal) modal.hide();
+
+                let summary = data.message || 'Correction applied.';
+                if (data.documents_marked_stale && data.documents_marked_stale.length) {
+                    summary += '\n\n' + data.documents_marked_stale.length +
+                        ' issued document(s) are now marked out of date. Reissue them to clear the flag.';
+                }
+                if (data.documents_quarantined) {
+                    summary += '\n\n' + data.documents_quarantined +
+                        ' generated document(s) were withdrawn from circulation.';
+                }
+                if (data.notifications_rerendered) {
+                    summary += '\n\n' + data.notifications_rerendered +
+                        ' queued email(s) were updated to match.';
+                }
+                alert(summary);
+
+                // Re-read rather than patch local state. Capacity counts,
+                // document flags and the queue all moved server-side, and
+                // guessing at them here is exactly what the old code got
+                // wrong.
+                this.adminEditMode = false;
+                this.adminModeStatus = '';
+                this.adminModeRemark = '';
+                this.adminSnapshot = null;
+                this.adminPendingChanges = [];
+                this.adminWarnings = null;
+
+                const offcanvas = bootstrap.Offcanvas.getInstance(
+                    document.getElementById('applicantDrawer'));
+                if (offcanvas) offcanvas.hide();
+
+                await this.fetchLiveQueue();
+                await this.fetchAuditLedger();
+                if (typeof this.fetchAdminConfigs === 'function') {
+                    await this.fetchAdminConfigs();
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                this.adminBusy = false;
+            }
         },
 
         // --- NEW: FETCH FORENSIC DOCUMENTS LOGIC ---
@@ -3794,6 +4009,9 @@ document.addEventListener('alpine:init', () => {
                 this.adminEditMode = false;
                 this.adminModeStatus = '';
                 this.adminModeRemark = '';
+                this.adminSnapshot = null;
+                this.adminPendingChanges = [];
+                this.adminWarnings = null;
 
                 const offcanvasEl = document.getElementById('applicantDrawer');
                 let offcanvas = bootstrap.Offcanvas.getInstance(offcanvasEl);

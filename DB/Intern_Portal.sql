@@ -343,7 +343,7 @@ CREATE TABLE applications (
     -- Values are only ever APPENDED to this list. MySQL and TiDB store an ENUM
     -- as a number counting from the left, so inserting a value in the middle
     -- silently re-labels every rejection already on record.
-    rejection_category ENUM('Invalid Document', 'No Show', 'Withdrawn', 'Other', 'Unsatisfactory Evaluation') NULL,
+        rejection_category ENUM('Invalid Document', 'No Show', 'Withdrawn', 'Other', 'Unsatisfactory Evaluation', 'Administrative Reset') NULL,
     
     approval_reference_id VARCHAR(100) NULL,
     is_admin_escalated BOOLEAN DEFAULT FALSE,
@@ -633,6 +633,8 @@ CREATE TABLE documents (
     
     uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    stale_since DATETIME NULL,
+    stale_reason VARCHAR(500) NULL,
     CONSTRAINT fk_doc_app FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
     CONSTRAINT fk_doc_type FOREIGN KEY (doc_type_id) REFERENCES document_types(doc_type_id),
     CONSTRAINT fk_doc_uploader FOREIGN KEY (uploaded_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL,

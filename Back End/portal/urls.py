@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     SubmitApplicationView, HROmniQueueAPIView, HRApplicationActionAPIView, 
-    HRAuditLedgerAPIView, IAMUserAPIView, AdminCycleAPIView, AdminConfigAPIView, 
+    HRAuditLedgerAPIView, IAMUserAPIView, AdminCycleAPIView, AdminConfigAPIView, AdminModeAPIView, 
     UniversalExportAPIView, HRDocumentOverrideAPIView, CurrentUserAPIView,
     ApplicationDraftAPIView, DraftDocumentAPIView, PortalBootstrapAPIView,
     SecureDocumentView, CollegeReferralAPIView, HRArchiveAPIView,
@@ -101,5 +101,6 @@ urlpatterns = [
     path('api/admin/iam/', IAMUserAPIView.as_view(), name='admin-iam'),
     path('api/admin/cycles/', AdminCycleAPIView.as_view(), name='admin-cycles'),
     path('api/admin/configs/', AdminConfigAPIView.as_view(), name='admin-configs'),
+    path('api/admin/mode/', AdminModeAPIView.as_view(), name='admin-mode'),
     path('api/admin/export/', UniversalExportAPIView.as_view(), name='admin-export'),
 ]

@@ -502,6 +502,20 @@ class Documents(models.Model):
     uploaded_at = models.DateTimeField(blank=True, null=True)
     updated_at = models.DateTimeField(blank=True, null=True)
 
+    approval_remarks = models.TextField(blank=True, null=True)
+
+    uploaded_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
+
+    # --- Staleness (Admin Mode) ---
+    # Set when an Admin Mode edit changes a field that appears on this
+    # document -- see documents/staleness.py. NULL means "still accurate as
+    # issued." Reissuing clears it on its own: store_generated_document()
+    # creates the replacement without these columns set and demotes this
+    # row to is_current = None.
+    stale_since = models.DateTimeField(blank=True, null=True)
+    stale_reason = models.CharField(max_length=500, blank=True, null=True)
+
     class Meta:
         managed = False
         db_table = 'documents'

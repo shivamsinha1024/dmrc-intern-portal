@@ -55,6 +55,16 @@ from .models import (
     ArchivedStatusHistory, ArchivedDocumentRequirements,
     ArchivedCycleJoiningDates
 )
+from portal.override import audit as override_audit
+from portal.override import documents as override_documents
+from portal.override import fields as override_fields
+from portal.override import rollback as override_rollback
+from portal.override import warnings as override_warnings
+from portal.override.lookup import (
+    get_live_application, get_live_application_by_ticket,
+    ApplicationArchived, ApplicationNotFound,
+)
+from portal.notifications.rerender import rerender_pending_notifications
 
 # --- Universal Helpers ---
 def safe_extract_time(obj, attr_name, format_str="%d-%m-%Y %I:%M %p", date_only=False):
@@ -4601,13 +4611,26 @@ class HRApplicationActionAPIView(APIView):
             actual_doj = request.data.get('actualDoj')
             sub_department = request.data.get('subDepartment')
             is_admin_escalated = request.data.get('isAdminEscalated')
-            is_god_mode = request.data.get('isGodMode', False)
+            # GOD MODE HAS BEEN REMOVED. Administrative corrections now go
+            # through AdminModeAPIView (PATCH /api/admin/mode/), which checks
+            # each field against an allowlist, validates it, records it
+            # individually in the audit ledger with a mandatory reason, and can
+            # roll an application back properly.
+            #
+            # Refused loudly rather than ignored. A stale browser tab still
+            # sending this flag would otherwise have its status change applied
+            # while its field edits vanished, and the administrator would be
+            # told it worked.
+            if request.data.get('isGodMode'):
+                return Response(
+                    {"error": "God Mode has been removed. Administrative "
+                              "corrections now go through Admin Mode. Reload "
+                              "the dashboard if this button is still on your "
+                              "screen."},
+                    status=status.HTTP_410_GONE)
             custom_override_file = request.data.get('customOverrideFile')
             dmra_session_date = request.data.get('dmraSessionDate')
             
-            department_name = request.data.get('department')
-            ward = request.data.get('ward')
-            dob = request.data.get('dob')
 
             if not ticket or not new_status:
                 return Response({"error": "Ticket ID and new status are required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -4762,18 +4785,6 @@ class HRApplicationActionAPIView(APIView):
                 # future rename fails loudly instead of silently dropping the flag.
                 app.is_admin_escalated = is_admin_escalated
 
-            if is_god_mode:
-                if department_name:
-                    try:
-                        new_dept = Departments.objects.get(department_name=department_name)
-                        app.department = new_dept
-                    except Departments.DoesNotExist:
-                        pass
-                if ward is not None:
-                    app.is_ward = 1 if ward else 0
-                if dob and app.student:
-                    app.student.date_of_birth = dob
-                    app.student.save()
             app.save()
 
             # --- ARRIVAL ---------------------------------------------------
@@ -4885,7 +4896,7 @@ class HRApplicationActionAPIView(APIView):
                     SystemAuditLogs.objects.create(
                         actor_user=system_user,
                         role_name=system_user.role.role_name if system_user and system_user.role else 'SYS-ADMIN',
-                        action_type='SYSTEM_OVERRIDE' if is_god_mode else new_status,
+                        action_type=new_status,
                         target_entity_type='Application',
                         target_entity_id=app.pk,
                         new_value=json.dumps({"remarks": canonical_action_remark(
@@ -8607,6 +8618,271 @@ class AdminConfigAPIView(APIView):
             print("Config POST Error:", str(e))
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+class AdminModeAPIView(APIView):
+    """Administrative correction of a live application.
+
+    GET   ?application_id=   what a rollback would destroy (dialog data)
+    PATCH                    apply corrections and/or reset the status
+
+    Named AdminMode rather than AdminOverride: HRDocumentOverrideAPIView
+    already exists and means something else.
+
+    WHY THE WHOLE THING IS ONE TRANSACTION
+    A correction touches four tables, quarantines files, re-renders queued
+    email and writes the ledger. Half of that applied is worse than none of
+    it: an application whose name was corrected but whose documents were
+    not flagged is silently wrong, and nothing downstream can tell.
+    """
+
+    @role_required('SYS-ADMIN')
+    def get(self, request):
+        try:
+            application = (
+                get_live_application_by_ticket(
+                    request.query_params.get('ticket'))
+                if request.query_params.get('ticket')
+                else get_live_application(
+                    request.query_params.get('application_id')))
+        except ApplicationArchived as archived:
+            return Response({
+                "error": "This application has been archived.",
+                "detail": (
+                    f"Ticket {archived.archived.application_code} was archived "
+                    f"when {archived.archived.session_term} "
+                    f"{archived.archived.application_year} was closed. Archived "
+                    f"records are readable in the Archive section and cannot be "
+                    f"edited."),
+            }, status=status.HTTP_409_CONFLICT)
+        except (ApplicationNotFound, ValueError, TypeError):
+            return Response({"error": "Application not found."},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "ticket": application.application_code,
+            "status": application.status,
+            "warnings": override_warnings.rollback_warnings(application),
+        }, status=status.HTTP_200_OK)
+
+    @role_required('SYS-ADMIN')
+    @transaction.atomic
+    def patch(self, request):
+        actor = getattr(getattr(request, 'identity', None), 'user', None)
+        now = timezone.now()
+
+        reason = (request.data.get('reason') or '').strip()
+        if len(reason) < 10:
+            # Mandatory by requirement. The length floor is there because
+            # "fix" and "." are not reasons, and this ledger is read by
+            # people who were not in the room.
+            return Response(
+                {"error": "A reason of at least 10 characters is required."},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            application = (
+                get_live_application_by_ticket(request.data.get('ticket'))
+                if request.data.get('ticket')
+                else get_live_application(request.data.get('application_id')))
+        except ApplicationArchived as archived:
+            return Response({
+                "error": "This application has been archived.",
+                "detail": (
+                    f"Ticket {archived.archived.application_code} was archived "
+                    f"when {archived.archived.session_term} "
+                    f"{archived.archived.application_year} was closed and can "
+                    f"no longer be edited."),
+            }, status=status.HTTP_409_CONFLICT)
+        except (ApplicationNotFound, ValueError, TypeError):
+            return Response({"error": "Application not found."},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        submitted = request.data.get('changes') or {}
+        new_status = request.data.get('status')
+
+        if new_status and new_status not in ('Submitted', 'Rejected'):
+            return Response(
+                {"error": "Status may only be reset to Submitted or Rejected."},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        # --- VALIDATE EVERYTHING BEFORE WRITING ANYTHING ------------------
+        # All errors are collected and returned together. An admin fixing
+        # nine fields should not discover the tenth problem on the tenth
+        # attempt.
+        errors = {}
+        normalised = {}
+
+        for key, raw in submitted.items():
+            if not override_fields.is_editable(key):
+                errors[key] = "This field cannot be edited."
+                continue
+            if override_fields.locked_by_status(key, application.status):
+                errors[key] = (
+                    f"Cannot be changed once the application reaches "
+                    f"{application.status}. Roll the application back first.")
+                continue
+            try:
+                normalised[key] = override_fields.normalise(key, raw)
+            except override_fields.OverrideFieldError as bad:
+                errors[key] = bad.message
+
+        if errors:
+            return Response({"errors": errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        student = application.student
+        academic = AcademicDetails.objects.filter(
+            application=application).first()
+        joining = getattr(application, 'joiningdetails', None)
+
+        # Foreign keys, checked here because fields.py holds no queries.
+                # Department arrives as a NAME from the dashboard's select. Resolve it
+        # to the row here, so the assignment below sets the FK properly.
+        dept_name = normalised.get('applications.department')
+        if dept_name is not None:
+            dept = Departments.objects.filter(
+                department_name=dept_name).first()
+            if dept is None:
+                errors['applications.department'] = "No such department."
+            else:
+                normalised['applications.department'] = dept
+
+        subdept_id = normalised.get('joining_details.allotted_sub_department_id')
+        if subdept_id is not None and not SubDepartments.objects.filter(
+                pk=subdept_id).exists():
+            errors['joining_details.allotted_sub_department_id'] = \
+                "No such sub-department."
+
+        # Cross-field: the score is checked against the scale AS IT WILL BE
+        # after this patch, not as it was, so a correction fixing both
+        # together is accepted.
+        if academic is not None:
+            final_scale = normalised.get(
+                'academic_details.grading_system', academic.grading_system)
+            final_score = normalised.get(
+                'academic_details.current_score', academic.current_score)
+            try:
+                override_fields.check_score_against_scale(
+                    final_score, final_scale)
+            except override_fields.OverrideFieldError as bad:
+                errors[bad.field_key] = bad.message
+
+        if errors:
+            return Response({"errors": errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # --- APPLY --------------------------------------------------------
+        targets = {
+            'students': student,
+            'academic_details': academic,
+            'applications': application,
+            'joining_details': joining,
+        }
+
+        changes = {}
+        dirty = {}
+
+        for key, value in normalised.items():
+            table, column = override_fields.split_key(key)
+            instance = targets.get(table)
+            if instance is None:
+                errors[key] = "No such record on this application."
+                continue
+
+            old = getattr(instance, column, None)
+            if old == value:
+                continue
+            setattr(instance, column, value)
+            changes[key] = (old, value)
+            dirty.setdefault(table, []).append(column)
+
+        if errors:
+            return Response({"errors": errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        for table, columns in dirty.items():
+            targets[table].save(update_fields=columns)
+
+        # --- STATUS RESET -------------------------------------------------
+        cleared, quarantined = [], []
+        previous_status = application.status
+
+        if new_status == 'Submitted':
+            cleared, quarantined = override_rollback.perform_rollback(
+                application, quarantine_file=_quarantine_file, now=now)
+            application.status = 'Submitted'
+            app_columns = [c for c in cleared
+                           if not c.startswith('joining_details.')]
+            application.save(update_fields=['status'] + app_columns)
+
+        elif new_status == 'Rejected':
+            # NOT a rollback. Closing an application administratively
+            # leaves the record standing exactly as it is, under its own
+            # category, so what actually happened stays readable.
+            application.status = 'Rejected'
+            application.rejection_category = 'Administrative Reset'
+            application.save(
+                update_fields=['status', 'rejection_category'])
+
+        # --- CONSEQUENCES -------------------------------------------------
+        # Order matters. Documents are flagged against the record as it now
+        # stands; notifications are re-rendered last so they compose from
+        # fully-applied state, matching how HRApplicationActionAPIView
+        # queues its email.
+        stale_rows = []
+        if changes and new_status != 'Submitted':
+            # A rollback quarantines both generated documents outright, so
+            # flagging them stale first would be writing to rows that are
+            # about to leave circulation.
+            stale_rows = override_documents.mark_stale_documents(
+                application, changes,
+                getattr(actor, 'username', 'an administrator'), now)
+
+        rerendered = rerender_pending_notifications(application)
+
+        # --- AUDIT --------------------------------------------------------
+        for key, (old, value) in changes.items():
+            override_audit.log_field_correction(
+                actor, application, key, old, value, reason)
+
+        if new_status in ('Submitted', 'Rejected'):
+            override_audit.log_status_rollback(
+            actor, application, previous_status, new_status, reason,
+            cleared, [q['quarantined_to'] for q in quarantined])
+
+            for item in quarantined:
+                override_audit.log_document_quarantined(
+                    actor, item['document'], item['doc_type_name'],
+                    application.application_code, item['quarantined_to'],
+                    reason)
+
+            # The TIMELINE row, written directly rather than through
+            # record_application_event().
+            #
+            # That helper writes its own ledger row, so calling it here
+            # produced two ADMIN_STATUS_ROLLBACK entries for one event --
+            # and with audit_only=True it wrote the duplicate while
+            # SKIPPING the timeline, which is the opposite of what a status
+            # reset needs. log_status_rollback() above already owns the
+            # ledger; this owns the timeline.
+            verb = ('Reset to Submitted' if new_status == 'Submitted'
+                    else 'Closed')
+            ApplicationStatusHistory.objects.create(
+                application=application,
+                changed_by_user=actor,
+                previous_status=previous_status,
+                new_status=new_status,
+                remarks='%s by administrator. Reason: %s' % (verb, reason),
+                changed_at=now,
+            )
+
+        return Response({
+            "message": f"Ticket {application.application_code} corrected.",
+            "fields_changed": sorted(changes.keys()),
+            "fields_cleared": sorted(cleared),
+            "documents_quarantined": len(quarantined),
+            "documents_marked_stale": [d.document_id for d in stale_rows],
+            "notifications_rerendered": len(rerendered),
+        }, status=status.HTTP_200_OK)
 
 class UniversalExportAPIView(APIView):
     @role_required(*ALL_HR_ROLES)
