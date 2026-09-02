@@ -3044,17 +3044,16 @@ document.addEventListener('alpine:init', () => {
             // view -- and it is called from the Audit Ledger, which lists every
             // cycle ever run. `app` staying undefined is handled below.
             //
-            // This whole modal builds /media/ URLs, which return 404 on the
-            // intranet because Django serves nothing from that directory with
-            // DEBUG off. It is broken independently of the archive and needs
-            // its own fix; see SecureDocumentView for how documents are served.
+            // Every link in this modal now goes through the audited viewer --
+            // documentHref() below for candidate uploads, and server-supplied
+            // viewUrl/pdfUrl values for the official documents. Nothing here
+            // builds a /media/ address any more, which is what used to 404 on
+            // the intranet with DEBUG off.
 
             let modal = new bootstrap.Modal(document.getElementById('forensicDocumentModal'));
             modal.show();
 
-            // Dynamic Live Backend URL Construction
-            const baseURL = 'http://127.0.0.1:8000/media/';
-
+            
             setTimeout(() => {
                 let offerGenerated = app && this.OFFER_ISSUED_STATUSES.includes(app.status);
                 let certGenerated = app && ['Pending Dispatch', 'Completed'].includes(app.status);
